@@ -1,0 +1,86 @@
+Problem Statement (Brief)
+
+HyWorks currently provisions infrastructure resources conservatively to avoid user login delays, which can result in over-provisioning and increased infrastructure cost. User login behavior—especially for enterprise users—is often predictable based on shifts, calendars, and historical patterns.
+
+The intern will build a prediction-based system that analyzes historical user login and resource usage data to forecast demand and optimize provisioning decisions, improving cost efficiency while maintaining seamless user experience.
+
+Project Scope
+
+In Scope:
+
+Enterprise users (general shift and specific shift)
+
+Analysis of historical login and logout data
+
+Prediction of:
+
+User login time windows
+
+Concurrent user count
+
+Resource demand (desktops / applications)
+
+Rule-based and basic ML-based prediction models
+
+Simulated provisioning decisions (no production impact)
+
+Documentation and explainability of predictions
+
+Out of Scope:
+
+Consumer user behavior modeling
+
+Production deployment or live infra control
+
+Advanced deep learning models
+
+Billing, licensing, or chargeback systems
+
+Expected Deliverables
+
+Data model and sample dataset (synthetic or anonymized)
+
+Rule-based prediction engine
+
+Basic ML model for login/resource prediction
+
+Decision logic mapping prediction → provisioning action (simulated)
+
+Cost optimization analysis report (baseline vs predictive)
+
+Project documentation and final presentation/demo
+
+Success Criteria
+
+The project will be considered successful if the intern:
+
+Demonstrates accurate prediction of login patterns and resource demand
+
+Shows measurable cost optimization through simulation
+
+Delivers clear, well-documented code and design artifacts
+
+Provides explainable prediction results (logs / reports)
+
+Completes all planned deliverables within 90 days
+
+4. Skills Required
+Technical Skills
+
+Programming fundamentals (preferably Python)
+
+Ability to design and implement small projects independently
+
+Basic understanding of data analysis and algorithms
+
+AI Tools Expected
+
+Any AI-assisted code generation or productivity tools are acceptable
+
+Nice-to-Have Skills
+
+Exposure to Machine Learning concepts
+
+Familiarity with time-series or predictive analytics
+
+Basic knowledge of cloud or virtual infrastructure concepts

@@ -1,0 +1,6 @@
+__pycache__/
+*.joblib
+*.csv
+# If you want to track specific small CSVs, you can use !filename.csv
+# But definitely ignore the large log file
+log_data.csv

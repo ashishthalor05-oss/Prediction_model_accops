@@ -1,0 +1,5 @@
+Baseline MAE: 0.1395
+Baseline RMSE: 0.3612
+RF MAE: 0.1283
+RF RMSE: 0.3837
+Improvement: 8.09%
