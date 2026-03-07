@@ -14,6 +14,7 @@ udf['DayName'] = udf['Timestamp'].dt.day_name()
 udf['Hour']    = udf['Timestamp'].dt.hour
 
 print(f"=== User: {username} ===")
+
 print(f"Total Login Events : {len(udf)}")
 print(f"Date Range         : {udf['Timestamp'].min().date()} to {udf['Timestamp'].max().date()}")
 
@@ -59,3 +60,5 @@ for i in range(1, 8):
     win    = f"{fh(ws)} - {fh(we)}" if likely else "-"
     flag   = "YES <<" if likely else "No"
     print(f"  {str(d):<12} {dn:<12} {flag:<8} {win}")
+
+'''analyze user'''
