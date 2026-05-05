@@ -1,222 +1,149 @@
 """
 predict_future.py
 ─────────────────
-Generate future predictions with:
-  1. Holiday awareness (from holidays.csv / holidays.xlsx)
-  2. Employee Leave adjustment (from employee_leaves.csv)
-     → If employees are on leave, reduce predicted server allocation accordingly
-     → Half Day leaves reduce morning or afternoon intervals only
+Predicts Logins for a specific window (15m, 30m, 60m).
+Interval frequency matches the chosen window size.
 """
 
 import pandas as pd
 import joblib
 import sys
 import os
+import numpy as np
+import matplotlib.pyplot as plt
+import argparse
 from datetime import datetime, timedelta, date
 from load_holidays import load_holidays
 
-
-# ── Load employee leave adjustments ───────────────────────────────────────────
 def load_leave_adjustments(leave_file='employee_leaves.csv'):
-    """
-    Returns a dict:
-      {
-        date: {
-          'full':      count of full-day leaves,
-          'morning':   count of morning-half leaves,
-          'afternoon': count of afternoon-half leaves,
-        }
-      }
-    """
     adjustments = {}
-
-    if not os.path.exists(leave_file):
-        print("[Leaves] No employee_leaves.csv found. No leave adjustments applied.")
-        return adjustments
-
+    if not os.path.exists(leave_file): return adjustments
     df = pd.read_csv(leave_file)
-    print(f"[Leaves] Loaded {len(df)} leave record(s) from {leave_file}")
-
     for _, row in df.iterrows():
         try:
             start = pd.to_datetime(str(row.get('Start Date', ''))).date()
             end   = pd.to_datetime(str(row.get('End Date',   ''))).date()
             hday  = str(row.get('Half Day', 'No')).strip().lower()
-        except Exception:
-            continue
-
-        current = start
-        while current <= end:
-            if current not in adjustments:
-                adjustments[current] = {'full': 0, 'morning': 0, 'afternoon': 0}
-
-            if 'morning' in hday:
-                adjustments[current]['morning'] += 1
-            elif 'afternoon' in hday:
-                adjustments[current]['afternoon'] += 1
-            else:
-                adjustments[current]['full'] += 1
-
-            current += timedelta(days=1)
-
-    total_days = sum(
-        v['full'] + v['morning'] + v['afternoon']
-        for v in adjustments.values()
-    )
-    print(f"[Leaves] Leave adjustments cover {len(adjustments)} date(s), {total_days} employee-day(s).")
+        except: continue
+        curr = start
+        while curr <= end:
+            if curr not in adjustments: adjustments[curr] = {'full': 0, 'morning': 0, 'afternoon': 0}
+            if 'morning' in hday: adjustments[curr]['morning'] += 1
+            elif 'afternoon' in hday: adjustments[curr]['afternoon'] += 1
+            else: adjustments[curr]['full'] += 1
+            curr += timedelta(days=1)
     return adjustments
 
-
 def apply_leave_adjustment(row, adjustments):
-    """
-    For a given 15-min interval, return how many users to subtract.
-    Full-day leave → subtract all day
-    Morning half   → subtract for hours 00–11
-    Afternoon half → subtract for hours 12–23
-    """
-    d    = row['Time Interval'].date()
-    hour = row['Hour']
-    adj  = adjustments.get(d, None)
-    if adj is None:
-        return 0
+    d, hr = row['Time Interval'].date(), row['Hour']
+    adj = adjustments.get(d)
+    if not adj: return 0
+    red = adj['full']
+    if hr < 12: red += adj['morning']
+    else: red += adj['afternoon']
+    return red
 
-    reduction = adj['full']  # full-day always subtracted
+def run_prediction():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('start', help="Start date YYYY-MM-DD")
+    parser.add_argument('end', nargs='?', help="End date YYYY-MM-DD")
+    parser.add_argument('--window', default='15m', choices=['15m', '30m', '60m', 'all'], help="Prediction window")
+    args = parser.parse_args()
 
-    if hour < 12:
-        reduction += adj['morning']
-    else:
-        reduction += adj['afternoon']
+    start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
+    end_date   = datetime.strptime(args.end, "%Y-%m-%d").date() if args.end else start_date
+    window     = args.window
 
-    return reduction
+    # Map windows to models
+    window_map = {
+        '15m': [('Login Count', 'rf_model_login_count.joblib')],
+        '30m': [('Login 30m', 'rf_model_login_30m.joblib')],
+        '60m': [('Login 60m', 'rf_model_login_60m.joblib')],
+        'all': [('Login Count', 'rf_model_login_count.joblib'), 
+                ('Login 30m', 'rf_model_login_30m.joblib'),
+                ('Login 60m', 'rf_model_login_60m.joblib')]
+    }
+    targets_to_run = window_map[window]
+    
+    # Always include Active Users
+    targets_to_run.append(('Active Users', 'rf_model_active_users.joblib'))
 
+    # Set interval frequency
+    freq_map = {'15m': 15, '30m': 30, '60m': 60, 'all': 15}
+    interval_minutes = freq_map[window]
 
-# ── Main prediction function ───────────────────────────────────────────────────
-def predict_future_range(start_date_str, end_date_str=None):
+    print(f"Backtest Prediction: {start_date} to {end_date} | Window: {window} | Frequency: {interval_minutes}m")
 
-    # Load Models
-    try:
-        model_resource = joblib.load('rf_model_resource_users.joblib')
-        model_active   = joblib.load('rf_model_active_users.joblib')
-    except FileNotFoundError:
-        print("Error: Models not found. Run 'run_project.py' or 'prediction_model.py' first.")
-        return
+    # Build intervals
+    intervals = []
+    curr = start_date
+    while curr <= end_date:
+        t, t_end = datetime.combine(curr, datetime.min.time()), datetime.combine(curr, datetime.max.time())
+        while t <= t_end:
+            intervals.append(t)
+            t += timedelta(minutes=interval_minutes)
+        curr += timedelta(days=1)
 
-    # Optional login-count models
-    model_single_logins = joblib.load('rf_model_single_session_logins.joblib') \
-        if os.path.exists('rf_model_single_session_logins.joblib') else None
-    model_multi_logins  = joblib.load('rf_model_multi_session_logins.joblib') \
-        if os.path.exists('rf_model_multi_session_logins.joblib') else None
-
-    # Parse Dates
-    try:
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        end_date   = datetime.strptime(end_date_str,   "%Y-%m-%d").date() if end_date_str else start_date
-    except ValueError:
-        print("Error: Invalid date format. Use YYYY-MM-DD.")
-        return
-
-    print(f"\nGenerating prediction from {start_date} to {end_date}...")
-
-    # Build 15-minute intervals
-    all_intervals = []
-    current_date  = start_date
-    while current_date <= end_date:
-        current_time  = datetime.combine(current_date, datetime.min.time())
-        day_end_time  = datetime.combine(current_date, datetime.max.time())
-        while current_time <= day_end_time:
-            all_intervals.append(current_time)
-            current_time += timedelta(minutes=15)
-        current_date += timedelta(days=1)
-
-    df = pd.DataFrame({'Time Interval': all_intervals})
-
-    # Time features
-    df['Hour']      = df['Time Interval'].dt.hour
+    df = pd.DataFrame({'Time Interval': intervals})
+    df['HourFraction'] = df['Time Interval'].dt.hour + (df['Time Interval'].dt.minute / 60.0)
     df['DayOfWeek'] = df['Time Interval'].dt.dayofweek
+    df['Hour'], df['Month'], df['Day'] = df['Time Interval'].dt.hour, df['Time Interval'].dt.month, df['Time Interval'].dt.day
+    df['Hour_sin'] = np.sin(2 * np.pi * df['HourFraction']/24.0)
+    df['Hour_cos'] = np.cos(2 * np.pi * df['HourFraction']/24.0)
+    df['DayOfWeek_sin'] = np.sin(2 * np.pi * df['DayOfWeek']/7.0)
+    df['DayOfWeek_cos'] = np.cos(2 * np.pi * df['DayOfWeek']/7.0)
     df['IsWeekend'] = df['DayOfWeek'] >= 5
-    df['Month']     = df['Time Interval'].dt.month
-    df['Day']       = df['Time Interval'].dt.day
+    
+    mandatory, optional = load_holidays()
+    df['IsHoliday'] = df['Time Interval'].dt.date.apply(lambda x: x in mandatory)
+    df['IsOptionalHoliday'] = df['Time Interval'].dt.date.apply(lambda x: x in optional)
 
-    # Load holidays from file (not hardcoded)
-    mandatory_holidays, optional_holidays = load_holidays()
-    df['IsHoliday']         = df['Time Interval'].dt.date.apply(lambda x: x in mandatory_holidays)
-    df['IsOptionalHoliday'] = df['Time Interval'].dt.date.apply(lambda x: x in optional_holidays)
+    features = ['HourFraction', 'DayOfWeek', 'Hour_sin', 'Hour_cos', 'DayOfWeek_sin', 'DayOfWeek_cos', 
+                'IsWeekend', 'IsHoliday', 'IsOptionalHoliday', 'Month', 'Day']
 
-    # Model predictions
-    features = ['Hour', 'DayOfWeek', 'IsWeekend', 'IsHoliday', 'IsOptionalHoliday', 'Month', 'Day']
-    X = df[features]
+    for target, path in targets_to_run:
+        if os.path.exists(path):
+            model = joblib.load(path)
+            col = f"PREDICTED {target.upper()}"
+            df[col] = model.predict(df[features]).clip(0).astype(int)
+        else:
+            print(f"Warning: Model {path} missing.")
 
-    df['Predicted Resource Users'] = model_resource.predict(X).astype(int)
-    df['Predicted Active Users']   = model_active.predict(X).astype(int)
+    # ── Logical Consistency Check ─────────────────────────────────────────────
+    # Active Users MUST be at least >= current interval logins
+    login_cols = [c for c in df.columns if 'LOGIN' in c]
+    if 'PREDICTED ACTIVE USERS' in df.columns and login_cols:
+        # We take the max across all predicted login windows to be safe
+        max_login = df[login_cols].max(axis=1)
+        df['PREDICTED ACTIVE USERS'] = np.maximum(df['PREDICTED ACTIVE USERS'], max_login)
 
-    # Predict login counts if models exist
-    if model_single_logins:
-        df['Predicted Single Logins'] = model_single_logins.predict(X).clip(0).astype(int)
-    if model_multi_logins:
-        df['Predicted Multi Logins']  = model_multi_logins.predict(X).clip(0).astype(int)
+    # Load Actuals
+    if os.path.exists('processed_data.csv'):
+        actuals = pd.read_csv('processed_data.csv')
+        actuals['Time Interval'] = pd.to_datetime(actuals['Time Interval'])
+        cols_to_merge = ['Time Interval'] + [t[0] for t in targets_to_run]
+        df = df.merge(actuals[cols_to_merge], on='Time Interval', how='left')
 
-    # ── Apply employee leave adjustments ──────────────────────────────────────
     adjustments = load_leave_adjustments()
-    if adjustments:
-        df['Leave Reduction'] = df.apply(
-            lambda row: apply_leave_adjustment(row, adjustments), axis=1
-        )
-        # Subtract leaves from predictions (floor at 0)
-        df['Adjusted Active Users']   = (df['Predicted Active Users']   - df['Leave Reduction']).clip(lower=0).astype(int)
-        df['Adjusted Resource Users'] = (df['Predicted Resource Users'] - df['Leave Reduction']).clip(lower=0).astype(int)
-
-        print("\n[Leaves] Applied leave adjustments to predictions.")
-        print("         Column 'Adjusted Active Users' = Model Prediction - Employees on Leave")
-    else:
-        df['Leave Reduction']         = 0
-        df['Adjusted Active Users']   = df['Predicted Active Users']
-        df['Adjusted Resource Users'] = df['Predicted Resource Users']
-
-    # Server allocation recommendation (10% buffer + 5 users)
-    df['Servers Needed'] = ((df['Adjusted Active Users'] * 1.10) + 5).astype(int)
-
-    # ── Display ───────────────────────────────────────────────────────────────
-    print("\n--- Prediction Output (First 10 rows) ---")
-    print(df[['Time Interval',
-              'Predicted Active Users', 'Leave Reduction',
-              'Adjusted Active Users', 'Servers Needed']].head(10).to_string(index=False))
-
-    # Leave-impacted days summary
-    if adjustments:
-        leave_days = df[df['Leave Reduction'] > 0].copy()
-        if not leave_days.empty:
-            daily = leave_days.groupby(leave_days['Time Interval'].dt.date).agg(
-                Employees_on_Leave=('Leave Reduction', 'max'),
-                Avg_Adjusted_Users=('Adjusted Active Users', 'mean'),
-                Max_Servers_Needed=('Servers Needed', 'max')
-            ).reset_index()
-            daily.columns = ['Date', 'Employees on Leave', 'Avg Adjusted Users', 'Max Servers Needed']
-            print("\n--- Leave-Adjusted Days Summary ---")
-            print(daily.to_string(index=False))
-
-    # Peak stats
-    peak_adj  = df['Adjusted Active Users'].max()
-    peak_pred = df['Predicted Active Users'].max()
-    peak_time = df.loc[df['Adjusted Active Users'].idxmax(), 'Time Interval']
-    saved     = peak_pred - peak_adj
-
-    print(f"\n--- Summary: {start_date} to {end_date} ---")
-    print(f"Peak Predicted Active Users  (without leaves): {peak_pred}")
-    print(f"Peak Adjusted Active Users   (with leaves):    {peak_adj}  (saved {saved} servers at peak)")
-    print(f"Peak at: {peak_time}")
+    df['Employees on Leave'] = df.apply(lambda r: apply_leave_adjustment(r, adjustments), axis=1) if adjustments else 0
 
     # Save
-    out = f"prediction_{start_date}_to_{end_date}.csv" if start_date != end_date else f"prediction_{start_date}.csv"
-    df.to_csv(out, index=False)
-    print(f"\nDetailed prediction saved to {out}")
-    return df
+    out_name = f"backtest_{window}_{start_date}_to_{end_date}.csv"
+    df.to_csv(out_name, index=False)
+    
+    # Graphs
+    for target, _ in targets_to_run:
+        if target == 'Active Users': continue
+        plt.figure(figsize=(12, 6))
+        p_col = f"PREDICTED {target.upper()}"
+        plt.plot(df['Time Interval'], df[p_col], label=f'Predicted {target}', color='#f43f5e', linewidth=2)
+        if target in df.columns and not df[target].isnull().all():
+            plt.plot(df['Time Interval'], df[target], label=f'Actual {target}', color='#3b82f6', alpha=0.4)
+        plt.title(f"Prediction: {target} ({start_date})")
+        plt.legend(); plt.grid(True, alpha=0.3)
+        plt.savefig(f'chart_{target.replace(" ", "_")}.png'); plt.close()
 
+    print(f"Success: Results saved to {out_name}")
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2:
-        predict_future_range(sys.argv[1], sys.argv[2])
-    elif len(sys.argv) > 1:
-        predict_future_range(sys.argv[1])
-    else:
-        date_input = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-        predict_future_range(date_input)
+    run_prediction()

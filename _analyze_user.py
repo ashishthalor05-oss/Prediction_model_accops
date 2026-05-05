@@ -3,6 +3,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 
 import pandas as pd
 from datetime import date, timedelta
+from load_holidays import load_holidays
 
 username = 'tushar.komawar'
 
@@ -53,12 +54,46 @@ print(f"  Most Active Day      : {day_counts.idxmax()}")
 print()
 print(f"  {'Date':<12} {'Day':<12} {'Login?':<8} Window")
 print(f"  {'-'*12} {'-'*12} {'-'*8} {'-'*20}")
+mandatory, optional = load_holidays()
+holidays = mandatory.union(optional)
+
+# Load personal leaves for this user
+on_leave_dates = set()
+if os.path.exists('employee_leaves.csv'):
+    try:
+        ldf = pd.read_csv('employee_leaves.csv')
+        # Check both naming conventions (HR Excel vs Manual)
+        u_col = 'UserId' if 'UserId' in ldf.columns else 'Employee Name'
+        user_leaves = ldf[ldf[u_col].astype(str).str.lower().str.strip() == username.lower()]
+        for _, row in user_leaves.iterrows():
+            s = pd.to_datetime(row.get('From Date' if 'From Date' in ldf.columns else 'Start Date')).date()
+            e = pd.to_datetime(row.get('To Date' if 'To Date' in ldf.columns else 'End Date')).date()
+            curr = s
+            while curr <= e:
+                on_leave_dates.add(curr)
+                curr += timedelta(days=1)
+    except: pass
+
 for i in range(1, 8):
     d      = date.today() + timedelta(days=i)
     dn     = d.strftime('%A')
-    likely = dn in days_active
-    win    = f"{fh(ws)} - {fh(we)}" if likely else "-"
-    flag   = "YES <<" if likely else "No"
+    
+    on_leave = d in on_leave_dates
+    is_holiday = d in holidays
+
+    if is_holiday:
+        likely = False
+        win    = "Holiday"
+        flag   = "No"
+    elif on_leave:
+        likely = False
+        win    = "On Leave"
+        flag   = "No"
+    else:
+        likely = dn in days_active
+        win    = f"{fh(ws)} - {fh(we)}" if likely else "-"
+        flag   = "YES <<" if likely else "No"
+        
     print(f"  {str(d):<12} {dn:<12} {flag:<8} {win}")
 
 '''analyze user'''

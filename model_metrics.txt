@@ -1,5 +1,6 @@
-Baseline MAE: 0.1395
-Baseline RMSE: 0.3612
-RF MAE: 0.1283
-RF RMSE: 0.3837
-Improvement: 8.09%
+Training Cutoff: 2026-02-01
+
+Login Count: Train MAE=0.97
+Login 30m: Train MAE=0.94
+Login 60m: Train MAE=0.63
+Active Users: Train MAE=1.08

@@ -3,11 +3,12 @@ import os
 import sys
 import time
 
-def run_script(script_name):
+def run_script(script_name, args=None):
+    if args is None: args = []
     print(f"\n[{time.strftime('%H:%M:%S')}] Running {script_name}...")
     try:
-        # Run the script and wait for it to finish
-        result = subprocess.run([sys.executable, script_name], check=True)
+        cmd = [sys.executable, script_name] + args
+        result = subprocess.run(cmd, check=True)
         print(f"[OK] {script_name} completed successfully.")
         return True
     except subprocess.CalledProcessError as e:
@@ -19,54 +20,37 @@ def run_script(script_name):
 
 def main():
     print("==================================================")
-    print("   User Login Prediction Model - Full Pipeline    ")
+    print("   User Login Prediction Model - Login Only       ")
     print("==================================================")
-    print(f"Python Executable: {sys.executable}")
-    print(f"Working Directory: {os.getcwd()}")
+    
+    start_date = sys.argv[1] if len(sys.argv) > 1 else None
+    end_date   = sys.argv[2] if len(sys.argv) > 2 else None
     
     # 1. Filter Logs
-    # Optional step: Only run if log_data.csv exists, or if the user wants to regenerate logs
-    # We'll try to run it, but if it fails (e.g. missing input), we check if we can proceed.
     if os.path.exists('log_data.csv'):
-        if not run_script('filter_logs.py'):
-            print("⚠️ filter_logs.py failed. Checking if we can proceed with existing intermediate files...")
-            if not (os.path.exists('login_logs.csv') and os.path.exists('disconnect_logs.csv')):
-                print("❌ Critical: login_logs.csv or disconnect_logs.csv missing. Cannot proceed.")
-                return
-    else:
-        print("ℹ️ log_data.csv not found. Skipping filter_logs.py and assuming intermediate logs exist.")
-
-    # 2. Calculate Concurrency
+        run_script('filter_logs.py')
+    
+    # 2. Aggregate Logins (formerly calculate_concurrency)
+    # This now produces processed_data.csv with 15m login counts
     if not run_script('calculate_concurrency.py'):
-         print("❌ Pipeline stopped at calculate_concurrency.py")
+         print("Error: Pipeline stopped at aggregation step.")
          return
 
-    # 3. Data Analysis & Feature Engineering
-    if not run_script('data_analysis_and_prep.py'):
-         print("❌ Pipeline stopped at data_analysis_and_prep.py")
-         return
-
-    # 4. Prediction Model
-    if not run_script('prediction_model.py'):
-         print("❌ Pipeline stopped at prediction_model.py")
-         return
-
-    # 5. Simulation
-    if not run_script('simulation.py'):
-         print("❌ Pipeline stopped at simulation.py")
+    # 3. Prediction Model (Training)
+    model_args = []
+    if start_date and end_date:
+        model_args = [start_date, end_date]
+    if not run_script('prediction_model.py', args=model_args):
+         print("Error: Pipeline stopped at prediction_model.py")
          return
 
     print("\n==================================================")
-    print("   Pipeline Execution Finished Successfully       ")
+    print("   Training Pipeline Finished Successfully        ")
     print("==================================================")
     print("Outputs generated:")
-    print(" 1. concurrency_report.csv")
-    print(" 2. processed_data.csv")
-    print(" 3. prediction_comparison.png")
-    print(" 4. provisioning_simulation.png")
-    print(" 5. active_users_over_time.png")
-    print(" 6. model_metrics.txt")
-    print(" 7. cost_optimization_report.txt")
+    print(" 1. processed_data.csv (Login intervals)")
+    print(" 2. rf_model_login_count.joblib")
+    print(" 3. model_metrics.txt")
 
 if __name__ == "__main__":
     main()

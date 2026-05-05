@@ -1,0 +1,9 @@
+streamlit
+pandas
+pyodbc
+Pillow
+matplotlib
+seaborn
+scikit-learn
+openpyxl
+configparser

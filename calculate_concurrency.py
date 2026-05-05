@@ -1,148 +1,117 @@
 import pandas as pd
-from datetime import timedelta
+from datetime import timedelta, datetime
 import os
 from load_holidays import load_holidays
 
 def calculate_concurrency():
-    # Load the data
-    print("Loading data...")
-    try:
-        resource_df = pd.read_csv('resource_logs.csv')
-    except FileNotFoundError:
-        print("Error: resource_logs.csv not found. Please run filter_logs.py first.")
+    """
+    Reconstructs user sessions and aggregates logins for 15, 30, and 60 minute windows.
+    """
+    print("Loading Login & Logout Logs...")
+    if not os.path.exists('login_logs.csv') or not os.path.exists('disconnect_logs.csv'):
+        print("Error: login_logs.csv or disconnect_logs.csv not found.")
         return
 
-    # Load Holidays from holidays.csv or holidays.xlsx
+    # Load Holidays
     mandatory_holidays, optional_holidays = load_holidays()
 
-    # Convert timestamps to datetime
-    print("Processing timestamps...")
-    resource_df['Timestamp'] = pd.to_datetime(resource_df['Timestamp'])
+    # Load Logs
+    logins = pd.read_csv('login_logs.csv')
+    logouts = pd.read_csv('disconnect_logs.csv')
 
-    # Function to reconstruct sessions from a DataFrame of events
-    def reconstruct_sessions(events_df, resource_type_name):
-        sessions = []
-        grouped = events_df.groupby('Username')
-        
-        for user, group in grouped:
-            group = group.sort_values(by='Timestamp')
-            current_start = None
-            
-            for index, row in group.iterrows():
-                if row['Event'] == 'Start':
-                    # If already started, update start time (assume restart)
-                    current_start = row['Timestamp']
-                
-                elif row['Event'] == 'End':
-                    if current_start is not None:
-                        sessions.append({
-                            'Username': user,
-                            'Start': current_start,
-                            'End': row['Timestamp'],
-                            'Type': resource_type_name
-                        })
-                        current_start = None
-            
-            # Handle active sessions at end of log
-            if current_start is not None:
-                last_time = events_df['Timestamp'].max()
-                sessions.append({
-                    'Username': user,
-                    'Start': current_start,
-                    'End': last_time,
-                    'Type': resource_type_name
-                })
-        return pd.DataFrame(sessions)
-
-    print("Reconstructing sessions...")
-    # Split by Resource Type
-    single_events = resource_df[resource_df['ResourceType'] == 'Single']
-    multi_events  = resource_df[resource_df['ResourceType'] == 'Multi']
-    user_events   = resource_df[resource_df['ResourceType'] == 'UserSession']
-
-    single_sessions = reconstruct_sessions(single_events, 'Single')
-    multi_sessions  = reconstruct_sessions(multi_events,  'Multi')
-    user_sessions   = reconstruct_sessions(user_events,   'UserSession')
-
-    # Pre-filter only Start events for login counts
-    single_starts = single_events[single_events['Event'] == 'Start'].copy()
-    multi_starts  = multi_events[multi_events['Event']   == 'Start'].copy()
+    logins['Timestamp'] = pd.to_datetime(logins['Timestamp'], format='mixed', errors='coerce')
+    logouts['Timestamp'] = pd.to_datetime(logouts['Timestamp'], format='mixed', errors='coerce')
     
-    # Combine for interval range calculation
-    all_sessions_list = [df for df in [single_sessions, multi_sessions, user_sessions] if not df.empty]
-    
-    if not all_sessions_list:
-        print("No sessions found.")
+    logins = logins.dropna(subset=['Timestamp']).sort_values('Timestamp')
+    logouts = logouts.dropna(subset=['Timestamp']).sort_values('Timestamp')
+
+    if logins.empty:
+        print("No valid login logs found.")
         return
+
+    # 1. Reconstruct Sessions (3-hour timeout)
+    sessions = []
+    logins_by_user = {u: group.sort_values('Timestamp') for u, group in logins.groupby('Username')}
+    logouts_by_user = {u: group.sort_values('Timestamp') for u, group in logouts.groupby('Username')}
+
+    print("Reconstructing sessions with 3-hour timeout...")
+    for user, u_logins in logins_by_user.items():
+        u_logouts = logouts_by_user.get(user, pd.DataFrame(columns=['Timestamp']))
+        for i in range(len(u_logins)):
+            login_time = u_logins.iloc[i]['Timestamp']
+            next_logout = u_logouts[u_logouts['Timestamp'] > login_time]
+            end_logout = next_logout.iloc[0]['Timestamp'] if not next_logout.empty else None
+            end_login = u_logins.iloc[i+1]['Timestamp'] if i+1 < len(u_logins) else None
+            timeout_end = login_time + timedelta(hours=3)
+            
+            candidates = [timeout_end]
+            if end_logout: candidates.append(end_logout)
+            if end_login: candidates.append(end_login)
+            logout_time = min(candidates)
+            sessions.append({'Start': login_time, 'End': logout_time})
+
+    # 2. Aggregation
+    start_all = logins['Timestamp'].min().replace(hour=0, minute=0, second=0, microsecond=0)
+    end_all = logins['Timestamp'].max().replace(hour=23, minute=59, second=59, microsecond=0)
+    time_slots = pd.date_range(start=start_all, end=end_all, freq='15min')
+    
+    results = []
+    print(f"Aggregating {len(time_slots)} intervals...")
+    
+    # Pre-calculate simple counts per slot for speed
+    slot_counts = {slot: 0 for slot in time_slots}
+    block_30m   = {}
+    block_60m   = {}
+    
+    for t in logins['Timestamp']:
+        floored_15 = t.floor('15min')
+        floored_30 = t.floor('30min')
+        floored_60 = t.floor('60min')
         
-    all_sessions = pd.concat(all_sessions_list)
+        if floored_15 in slot_counts:
+            slot_counts[floored_15] += 1
+            
+        block_30m[floored_30] = block_30m.get(floored_30, 0) + 1
+        block_60m[floored_60] = block_60m.get(floored_60, 0) + 1
 
-    print(f"Reconstructed: {len(single_sessions)} Single, {len(multi_sessions)} Multi, {len(user_sessions)} User sessions.")
-
-    # Define 15-minute intervals
-    min_time = all_sessions['Start'].min().floor('15min')
-    max_time = all_sessions['End'].max().ceil('15min')
-    
-    print(f"Calculating concurrency from {min_time} to {max_time}...")
-    
-    intervals = pd.date_range(start=min_time, end=max_time, freq='15min')
-    
-    concurrency_counts = []
-    
-    for interval_start in intervals:
-        interval_end = interval_start + timedelta(minutes=15)
+    for idx, slot in enumerate(time_slots):
+        slot_end = slot + timedelta(minutes=15)
         
-        # Helper to count overlaps (concurrent sessions)
-        def count_overlaps(session_df):
-            if session_df.empty: return 0
-            mask = (session_df['Start'] < interval_end) & (session_df['End'] > interval_start)
-            return session_df[mask].shape[0]
-
-        # Helper to count new logins in this interval (Start events)
-        def count_logins(starts_df):
-            if starts_df.empty: return 0
-            mask = (starts_df['Timestamp'] >= interval_start) & (starts_df['Timestamp'] < interval_end)
-            return starts_df[mask].shape[0]
-
-        single_count       = count_overlaps(single_sessions)
-        multi_count        = count_overlaps(multi_sessions)
-        user_count         = count_overlaps(user_sessions)
-        single_login_count = count_logins(single_starts)
-        multi_login_count  = count_logins(multi_starts)
+        # 15m Login Count (Current 15m window)
+        login_15m = slot_counts.get(slot, 0)
         
-        # Check Holiday
-        current_date = interval_start.date()
-        is_mandatory = current_date in mandatory_holidays
-        is_optional  = current_date in optional_holidays
-        holiday_flag = 'Mandatory' if is_mandatory else ('Optional' if is_optional else 'No')
-
-        concurrency_counts.append({
-            'Time Interval':          interval_start,
-            'Single Session Users':   single_count,
-            'Multi Session Users':    multi_count,
-            'Active Users':           user_count,
-            'Single Session Logins':  single_login_count,
-            'Multi Session Logins':   multi_login_count,
-            'Holiday':                holiday_flag
+        # 30m Login Count (Fixed Block: e.g. 12:00-12:30 or 12:30-13:00)
+        login_30m = block_30m.get(slot.floor('30min'), 0)
+        
+        # 60m Login Count (Fixed Block: e.g. 12:00-13:00)
+        login_60m = block_60m.get(slot.floor('60min'), 0)
+        
+        # Active Users
+        active_count = 0
+        for s in sessions:
+            if s['Start'] < slot_end and s['End'] > slot:
+                active_count += 1
+        
+        results.append({
+            'Time Interval': slot,
+            'Login Count': login_15m,
+            'Login 30m': login_30m,
+            'Login 60m': login_60m,
+            'Active Users': active_count
         })
-        
-    result_df = pd.DataFrame(concurrency_counts)
-    
-    # Save to CSV
-    output_file = 'concurrency_report.csv'
-    result_df.to_csv(output_file, index=False)
-    print(f"\nConcurrency report saved to {output_file}")
-    
-    print("\n--- Concurrency Preview (Top 10) ---")
-    print(result_df.head(10))
-    
-    print("\n--- Concurrency Preview (Peak Active Users) ---")
-    print(result_df.sort_values(by='Active Users', ascending=False).head(5))
 
-    # Remind user how to manage holidays
-    if not os.path.exists('holidays.csv') and not os.path.exists('holidays.xlsx'):
-        print("\nNote: No holidays.csv or holidays.xlsx found.")
-        print("Create a file with columns: Date, Description, Type (Mandatory/Optional)")
+    full_df = pd.DataFrame(results)
+    full_df['Date']      = full_df['Time Interval'].dt.date
+    full_df['Hour']      = full_df['Time Interval'].dt.hour
+    full_df['DayOfWeek'] = full_df['Time Interval'].dt.dayofweek
+    full_df['IsWeekend'] = full_df['DayOfWeek'] >= 5
+    full_df['Month']     = full_df['Time Interval'].dt.month
+    full_df['Day']       = full_df['Time Interval'].dt.day
+    full_df['IsHoliday']         = full_df['Date'].apply(lambda d: d in mandatory_holidays)
+    full_df['IsOptionalHoliday'] = full_df['Date'].apply(lambda d: d in optional_holidays)
+
+    full_df.to_csv('processed_data.csv', index=False)
+    print(f"Success: processed_data.csv created with 15/30/60m targets.")
 
 if __name__ == "__main__":
     calculate_concurrency()

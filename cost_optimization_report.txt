@@ -1,9 +1,9 @@
 --- Cost Optimization Analysis Report ---
-Test Period Intervals: 1479
-Static Capacity Set at: 201 (Max Historical + 10%)
-Static Resource Consumption: 297279 units
-Dynamic Resource Consumption: 90159 units
-Total Savings: 69.67%
-Risk: Under-provisioned events: 2 (0.14%)
+Test Period Intervals: 2120
+Static Capacity Set at: 165 (Max Historical + 10%)
+Static Resource Consumption: 349800 units
+Dynamic Resource Consumption: 147332 units
+Total Savings: 57.88%
+Risk: Under-provisioned events: 45 (2.12%)
 
 Note: 'Unit' represents one resource-slot for 15 minutes.

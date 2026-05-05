@@ -12,6 +12,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from tkinterdnd2 import TkinterDnD, DND_FILES
 import pandas as pd
+from load_holidays import load_holidays
 import os
 import sys
 import subprocess
@@ -19,23 +20,26 @@ import threading
 from datetime import datetime, timedelta, date
 import shutil
 import configparser
+from PIL import Image, ImageTk
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 # ── colour palette ─────────────────────────────────────────────────────────────
-BG        = '#0f172a'
-BG2       = '#1e293b'
-BG3       = '#334155'
-ACCENT    = '#38bdf8'
-ACCENT2   = '#0ea5e9'
-SUCCESS   = '#22c55e'
-WARNING   = '#f59e0b'
-DANGER    = '#ef4444'
-FG        = '#f1f5f9'
-FG2       = '#94a3b8'
-FONT      = ('Segoe UI', 10)
-FONT_B    = ('Segoe UI', 10, 'bold')
-FONT_T    = ('Segoe UI', 14, 'bold')
-FONT_S    = ('Segoe UI', 9)
-CODE      = ('Consolas', 9)
+BG        = '#0b0f19' # Deeper dark
+BG2       = '#111827' # Section backgrounds
+BG3       = '#1f2937' # Highlights / Borders
+ACCENT    = '#8b5cf6' # Violet accent
+ACCENT2   = '#7c3aed' # Darker violet
+SUCCESS   = '#10b981' # Emerald green
+WARNING   = '#f59e0b' # Amber
+DANGER    = '#f43f5e' # Rose red
+FG        = '#f9fafb' # Near white
+FG2       = '#9ca3af' # Muted grey
+FONT      = ('Inter', 10)
+FONT_B    = ('Inter', 10, 'bold')
+FONT_T    = ('Inter', 15, 'bold')
+FONT_S    = ('Inter', 9)
+CODE      = ('JetBrains Mono', 9)
 
 LEAVE_FILE = 'employee_leaves.csv'
 LEAVE_COLS = ['Employee Name','Start Date','End Date','Leave Type','Half Day','Description','Submitted On']
@@ -50,6 +54,41 @@ HR_COLS    = [
 ]
 
 
+class ScrollableTab(tk.Frame):
+    def __init__(self, parent, bg_color):
+        super().__init__(parent, bg=bg_color)
+        self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0, bg=bg_color)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = tk.Frame(self.canvas, bg=bg_color)
+        self.scrollable_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        self.canvas.bind(
+            "<Configure>",
+            lambda e: self.canvas.itemconfig(self.scrollable_window, width=e.width)
+        )
+        
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+
+        self.scrollable_frame.bind("<Enter>", self._bind_mouse)
+        self.scrollable_frame.bind("<Leave>", self._unbind_mouse)
+        self.canvas.bind("<Enter>", self._bind_mouse)
+        self.canvas.bind("<Leave>", self._unbind_mouse)
+        
+    def _bind_mouse(self, event):
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        
+    def _unbind_mouse(self, event):
+        self.canvas.unbind_all("<MouseWheel>")
+        
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
 # ══════════════════════════════════════════════════════════════════════════════
 class App(TkinterDnD.Tk):
     def __init__(self):
@@ -63,12 +102,20 @@ class App(TkinterDnD.Tk):
 
     # ── Top header ─────────────────────────────────────────────────────────────
     def _build_header(self):
-        hdr = tk.Frame(self, bg='#020617', pady=10)
+        hdr = tk.Frame(self, bg=BG, pady=15)
         hdr.pack(fill='x')
-        tk.Label(hdr, text='🖥  Resource Usage Prediction Model',
-                 font=FONT_T, bg='#020617', fg=ACCENT).pack(side='left', padx=20)
-        tk.Label(hdr, text='AI-powered server capacity planning',
-                 font=FONT_S, bg='#020617', fg=FG2).pack(side='left')
+        
+        # Glow effect / Title
+        title_f = tk.Frame(hdr, bg=BG)
+        title_f.pack(side='left', padx=30)
+        
+        tk.Label(title_f, text='🖥  Resource Usage Prediction',
+                 font=FONT_T, bg=BG, fg=ACCENT).pack(side='top', anchor='w')
+        tk.Label(title_f, text='AI-DRIVEN CAPACITY PLANNING ENGINE',
+                 font=('Inter', 8, 'bold'), bg=BG, fg=FG2).pack(side='top', anchor='w', pady=(2,0))
+        
+        # Bottom divider for header
+        tk.Frame(self, bg=BG3, height=1).pack(fill='x')
 
     # ── Tabs ───────────────────────────────────────────────────────────────────
     def _build_tabs(self):
@@ -76,72 +123,114 @@ class App(TkinterDnD.Tk):
         style.theme_use('clam')
         style.configure('TNotebook',          background=BG,  borderwidth=0)
         style.configure('TNotebook.Tab',      background=BG3, foreground=FG2,
-                        padding=[16,6], font=FONT)
+                        padding=[12, 6], font=('Inter', 10, 'bold'))
         style.map('TNotebook.Tab',
                   background=[('selected', BG2)],
                   foreground=[('selected', ACCENT)])
+
         style.configure('Treeview',           background=BG2, fieldbackground=BG2,
-                        foreground=FG,        rowheight=24,   font=FONT_S)
-        style.configure('Treeview.Heading',   background='#020617', foreground=ACCENT,
+                        foreground=FG,        rowheight=30,   font=FONT_S, borderwidth=0)
+        style.configure('Treeview.Heading',   background=BG, foreground=ACCENT,
                         font=FONT_B,          relief='flat')
-        style.map('Treeview', background=[('selected', ACCENT2)])
+        style.map('Treeview', 
+                  background=[('selected', ACCENT)],
+                  foreground=[('selected', 'white')])
+        
+        # Row alternating colors logic is usually done in the loading phase, 
+        # but I'll set the base style here.
         style.configure('TCombobox', fieldbackground=BG3, background=BG3,
-                        foreground=FG, selectbackground=ACCENT2)
+                        foreground=FG, selectbackground=ACCENT)
 
-        nb = ttk.Notebook(self)
-        nb.pack(fill='both', expand=True, padx=10, pady=(6,10))
+        self.main_nb = ttk.Notebook(self)
+        self.main_nb.pack(fill='both', expand=True, padx=10, pady=(6,10))
 
 
-        self.tab_predict  = tk.Frame(nb, bg=BG2)
-        self.tab_import   = tk.Frame(nb, bg=BG2)
-        self.tab_leave    = tk.Frame(nb, bg=BG2)
-        self.tab_results  = tk.Frame(nb, bg=BG2)
-        self.tab_userpred = tk.Frame(nb, bg=BG2)
+        self.tab_predict  = ScrollableTab(self.main_nb, bg_color=BG2)
+        self.tab_import   = ScrollableTab(self.main_nb, bg_color=BG2)
+        self.tab_leave    = ScrollableTab(self.main_nb, bg_color=BG2)
+        self.tab_holiday  = ScrollableTab(self.main_nb, bg_color=BG2)
+        self.tab_backtest = ScrollableTab(self.main_nb, bg_color=BG2)
+        self.tab_results  = ScrollableTab(self.main_nb, bg_color=BG2)
+        self.tab_userpred = ScrollableTab(self.main_nb, bg_color=BG2)
+        self.tab_usermaster = ScrollableTab(self.main_nb, bg_color=BG2)
+        self.tab_graphs   = ttk.Frame(self.main_nb) # Changed to standard Frame to fix geometry
 
-        nb.add(self.tab_predict,  text=' 📊  Run Prediction ')
-        nb.add(self.tab_import,   text=' 📂  Import Data ')
-        nb.add(self.tab_leave,    text=' 📅  Employee Leaves ')
-        nb.add(self.tab_results,  text=' 📋  Results Viewer ')
-        nb.add(self.tab_userpred, text=' 👤  User Prediction ')
+        self.main_nb.add(self.tab_predict,  text=' 🚀 PREDICTION ')
+        self.main_nb.add(self.tab_import,   text=' 📥 IMPORT ')
+        self.main_nb.add(self.tab_leave,    text=' 📝 LEAVES ')
+        self.main_nb.add(self.tab_holiday,  text=' 🗓️ HOLIDAYS ')
+        self.main_nb.add(self.tab_backtest, text=' 🎯 BACKTEST ')
+        self.main_nb.add(self.tab_results,  text=' 📂 RESULTS ')
+        self.main_nb.add(self.tab_userpred, text=' 👤 USERS ')
+        self.main_nb.add(self.tab_usermaster, text=' 👥 USER MASTER ')
+        self.main_nb.add(self.tab_graphs,   text=' 📊 GRAPHS ')
 
         self._build_predict_tab()
         self._build_import_tab()
         self._build_leave_tab()
+        self._build_holiday_tab()
+        self._build_backtest_tab()
         self._build_results_tab()
         self._build_user_prediction_tab()
+        self._build_user_master_tab()
+        self._build_graphs_tab()
 
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 1 — Run Prediction
     # ══════════════════════════════════════════════════════════════════════════
     def _build_predict_tab(self):
-        p = self.tab_predict
+        p = self.tab_predict.scrollable_frame
         self._section(p, '⚙️  Prediction Settings').pack(fill='x', padx=15, pady=(12,4))
 
-        form = tk.Frame(p, bg=BG2)
-        form.pack(fill='x', padx=15, pady=4)
-
-        def lbl(text, row, col):
-            tk.Label(form, text=text, font=FONT, bg=BG2, fg=FG2, anchor='w'
+        # Form helpers
+        def lbl(text, parent, row, col):
+            tk.Label(parent, text=text, font=FONT, bg=parent['bg'], fg=FG2, anchor='w'
                      ).grid(row=row, column=col, sticky='w', padx=8, pady=5)
-        def ent(row, col, default='', width=18):
-            e = tk.Entry(form, font=FONT, width=width, bg=BG3, fg=FG,
-                         insertbackground='white', relief='flat', bd=4)
+        def ent(parent, row, col, default='', width=18):
+            # Using a slightly lighter background for better input contrast
+            e = tk.Entry(parent, font=FONT, width=width, bg=BG3, fg=FG,
+                         insertbackground=ACCENT, relief='flat', bd=0, highlightthickness=1,
+                         highlightbackground=BG3, highlightcolor=ACCENT)
             e.grid(row=row, column=col, sticky='ew', padx=8, pady=5)
             e.insert(0, default)
             return e
 
         tomorrow = (date.today() + timedelta(days=1)).strftime('%Y-%m-%d')
         next_week = (date.today() + timedelta(days=7)).strftime('%Y-%m-%d')
+        ninety_ago = (date.today() - timedelta(days=90)).strftime('%Y-%m-%d')
+        today      = date.today().strftime('%Y-%m-%d')
 
-        lbl('Start Date (YYYY-MM-DD)', 0, 0);  self.pred_start = ent(0, 1, tomorrow)
-        lbl('End Date   (YYYY-MM-DD)', 0, 2);  self.pred_end   = ent(0, 3, next_week)
+        self._section(p, '⚙️  Train Model (Optional)').pack(fill='x', padx=15, pady=(10,4))
+        train_form = tk.Frame(p, bg=BG2)
+        train_form.pack(fill='x', padx=15, pady=2)
+        
+        lbl('Train From Date:', train_form, 0, 0)
+        self.train_start = ent(train_form, 0, 1, default=ninety_ago, width=14)
+        lbl('Train To Date:', train_form, 0, 2)
+        self.train_end = ent(train_form, 0, 3, default=today, width=14)
+        self._btn(train_form, '⚙️ Train Models', ACCENT2, self._run_training).grid(row=0, column=4, padx=12, pady=4)
+
+
+        self._section(p, '🔮  Run Prediction').pack(fill='x', padx=15, pady=(15,4))
+        pred_form = tk.Frame(p, bg=BG2)
+        pred_form.pack(fill='x', padx=15, pady=2)
+
+        lbl('Start Date (YYYY-MM-DD)', pred_form, 0, 0);  self.pred_start = ent(pred_form, 0, 1, tomorrow)
+        lbl('End Date   (YYYY-MM-DD)', pred_form, 0, 2);  self.pred_end   = ent(pred_form, 0, 3, next_week)
+        
+        lbl('Prediction Window', pred_form, 0, 4)
+        self.pred_window = tk.StringVar(value='15m')
+        cb = ttk.Combobox(pred_form, textvariable=self.pred_window, values=['15m', '30m', '60m', 'all'], 
+                          state='readonly', width=10, font=FONT)
+        cb.grid(row=0, column=5, padx=8, pady=5)
 
         # Buttons
         bf = tk.Frame(p, bg=BG2)
         bf.pack(pady=8)
         self._btn(bf, '▶  Run Prediction', ACCENT2,   self._run_prediction).pack(side='left', padx=6)
         self._btn(bf, '📁  Export to Excel', SUCCESS, self._export_prediction_excel).pack(side='left', padx=6)
+        self._btn(bf, '📊 Batch Daily Graphs', ACCENT, self._run_batch_daily_graphs_predict).pack(side='left', padx=6)
 
         # Status
         self.pred_status = tk.StringVar(value='Ready.')
@@ -150,8 +239,9 @@ class App(TkinterDnD.Tk):
 
         # Output log
         self._section(p, '📄  Output Log').pack(fill='x', padx=15, pady=(8,2))
-        self.pred_log = tk.Text(p, height=10, font=CODE, bg='#020617', fg='#86efac',
-                                insertbackground='white', relief='flat', state='disabled')
+        self.pred_log = tk.Text(p, height=10, font=CODE, bg=BG, fg='#10b981',
+                                insertbackground='white', relief='flat', state='disabled',
+                                padx=10, pady=10)
         self.pred_log.pack(fill='both', expand=True, padx=15, pady=(0,10))
 
     def _run_prediction(self):
@@ -165,7 +255,8 @@ class App(TkinterDnD.Tk):
 
         def worker():
             try:
-                cmd = [sys.executable, 'predict_future.py', start, end]
+                win = self.pred_window.get()
+                cmd = [sys.executable, 'predict_future.py', start, end, '--window', win]
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, text=True,
                                         cwd=os.getcwd())
@@ -173,12 +264,71 @@ class App(TkinterDnD.Tk):
                     self._log(line.rstrip())
                 proc.wait()
                 self.pred_status.set('✅ Prediction complete.')
+                
+                # Auto-select the latest file in the Result Viewer
                 self._refresh_results()
+                # Find the index of the new file
+                new_file = f"backtest_{win}_{start}_to_{end}.csv"
+                try:
+                    for i in range(self.results_lb.size()):
+                        if self.results_lb.get(i) == new_file:
+                            self.results_lb.select_set(i)
+                            self.results_lb.see(i)
+                            break
+                except: pass
+                
+                self._refresh_graphs_list()
             except Exception as e:
                 self._log(f'ERROR: {e}')
                 self.pred_status.set('❌ Error during prediction.')
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _run_training(self):
+        start = self.train_start.get().strip()
+        end   = self.train_end.get().strip()
+        if not start or not end:
+            messagebox.showerror('Missing', 'Please enter Train From and Train To dates.'); return
+
+        self.pred_status.set('Training Models...')
+        self._log_clear()
+
+        def worker():
+            self._btn_disable_all()
+            try:
+                cmd = [sys.executable, 'run_project.py', start, end]
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True,
+                                        cwd=os.getcwd())
+                for line in proc.stdout:
+                    self._log(line.rstrip())
+                proc.wait()
+                if proc.returncode == 0:
+                    self.pred_status.set('✅ Training complete.')
+                    self._refresh_graphs_list()
+                else:
+                    self.pred_status.set('❌ Error during training.')
+            except Exception as e:
+                self._log(f'ERROR: {e}')
+                self.pred_status.set('❌ Exception running training.')
+            finally:
+                self._btn_enable_all()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _btn_disable_all(self):
+        for w in self.tab_predict.winfo_children():
+            if isinstance(w, tk.Frame):
+                for child in w.winfo_children():
+                    if isinstance(child, tk.Button):
+                        child.configure(state='disabled')
+
+    def _btn_enable_all(self):
+        for w in self.tab_predict.winfo_children():
+            if isinstance(w, tk.Frame):
+                for child in w.winfo_children():
+                    if isinstance(child, tk.Button):
+                        child.configure(state='normal')
 
     def _export_prediction_excel(self):
         files = [f for f in os.listdir('.') if f.startswith('prediction_') and f.endswith('.csv')]
@@ -194,24 +344,25 @@ class App(TkinterDnD.Tk):
     # TAB 2 — Import Data
     # ══════════════════════════════════════════════════════════════════════════
     def _build_import_tab(self):
-        p = self.tab_import
+        p = self.tab_import.scrollable_frame
 
         # ── DB Connection Section ──────────────────────────────────────────────
         self._section(p, '🗄  Fetch from SQL Server Express').pack(fill='x', padx=15, pady=(12,2))
 
-        db_outer = tk.Frame(p, bg='#0f2336', relief='flat', bd=0)
+        db_outer = tk.Frame(p, bg=BG2, relief='flat', bd=0)
         db_outer.pack(fill='x', padx=15, pady=(0,6))
 
-        db_form = tk.Frame(db_outer, bg='#0f2336', padx=10, pady=8)
+        db_form = tk.Frame(db_outer, bg=BG2, padx=10, pady=8)
         db_form.pack(fill='x')
 
         def dlbl(text, row, col, colspan=1):
-            tk.Label(db_form, text=text, font=FONT, bg='#0f2336', fg=FG2, anchor='w'
+            tk.Label(db_form, text=text, font=FONT, bg=BG2, fg=FG2, anchor='w'
                      ).grid(row=row, column=col, columnspan=colspan, sticky='w', padx=6, pady=3)
 
         def dent(row, col, default='', width=22, show=''):
             e = tk.Entry(db_form, font=FONT, width=width, bg=BG3, fg=FG,
-                         insertbackground='white', relief='flat', bd=4, show=show)
+                         insertbackground=ACCENT, relief='flat', bd=0, highlightthickness=1,
+                         highlightbackground=BG3, highlightcolor=ACCENT, show=show)
             e.grid(row=row, column=col, sticky='ew', padx=6, pady=3)
             e.insert(0, default)
             return e
@@ -227,14 +378,16 @@ class App(TkinterDnD.Tk):
         self.db_table  = dent(1, 1, default='Logs', width=22)
         dlbl('Authentication', 1, 2)
         self.db_auth = tk.StringVar(value='windows')
-        auth_f = tk.Frame(db_form, bg='#0f2336')
+        auth_f = tk.Frame(db_form, bg=BG2)
         auth_f.grid(row=1, column=3, sticky='w', padx=6)
         tk.Radiobutton(auth_f, text='Windows Auth', variable=self.db_auth, value='windows',
-                       bg='#0f2336', fg=FG, selectcolor=BG3, activebackground='#0f2336',
-                       font=FONT, command=self._db_toggle_auth).pack(side='left')
+                       bg=BG2, fg=FG, selectcolor=BG, activebackground=BG2,
+                       font=FONT, command=self._db_toggle_auth, indicatoron=0, 
+                       padx=10, pady=4, cursor='hand2').pack(side='left')
         tk.Radiobutton(auth_f, text='SQL Auth', variable=self.db_auth, value='sql',
-                       bg='#0f2336', fg=FG, selectcolor=BG3, activebackground='#0f2336',
-                       font=FONT, command=self._db_toggle_auth).pack(side='left', padx=8)
+                       bg=BG2, fg=FG, selectcolor=BG, activebackground=BG2,
+                       font=FONT, command=self._db_toggle_auth, indicatoron=0,
+                       padx=10, pady=4, cursor='hand2').pack(side='left', padx=8)
 
         # Row 2 — SQL Auth credentials (hidden by default)
         dlbl('Username', 2, 0)
@@ -256,16 +409,16 @@ class App(TkinterDnD.Tk):
         self.db_to   = dent(3, 3, default=today.strftime('%Y-%m-%d'), width=18)
 
         # Row 4 — Buttons
-        btn_f = tk.Frame(db_form, bg='#0f2336')
+        btn_f = tk.Frame(db_form, bg=BG2)
         btn_f.grid(row=4, column=0, columnspan=4, pady=(6,2), sticky='w', padx=4)
         self._btn(btn_f, '🔌 Test Connection', ACCENT2,  self._db_test).pack(side='left', padx=4)
         self._btn(btn_f, '⬇  Fetch Data',      SUCCESS,  self._db_fetch).pack(side='left', padx=4)
-        self.db_status_lbl = tk.Label(btn_f, text='', font=FONT_S, bg='#0f2336', fg=FG2)
+        self.db_status_lbl = tk.Label(btn_f, text='', font=FONT_S, bg=BG2, fg=FG2)
         self.db_status_lbl.pack(side='left', padx=10)
 
         # Row 5 — Mini log
-        self.db_log = tk.Text(db_outer, height=4, font=CODE, bg='#020617', fg='#7dd3fc',
-                              relief='flat', state='disabled', padx=6, pady=4)
+        self.db_log = tk.Text(db_outer, height=4, font=CODE, bg=BG, fg=ACCENT,
+                              relief='flat', state='disabled', padx=10, pady=8)
         self.db_log.pack(fill='x', padx=10, pady=(0,8))
 
         # Load saved settings
@@ -279,46 +432,74 @@ class App(TkinterDnD.Tk):
                  font=FONT_S, bg=BG2, fg=WARNING).pack(padx=15, anchor='w', pady=(0,4))
 
         imports = [
-            ('Raw Log File',          'log_data.csv',              'Import raw system log data'),
-            ('Concurrency Report',    'concurrency_report.csv',    'Import pre-computed concurrency report'),
-            ('Holidays File',         'holidays.csv',              'Import holiday list (Date/Start Date/End Date/Type)'),
-            ('Employee Leaves',       LEAVE_FILE,                  'Import employee leave records'),
+            ('📄 Raw Log File',          'log_data.csv',              'Import raw system log data', None),
+            ('📈 Concurrency Report',    'concurrency_report.csv',    'Import pre-computed concurrency report', None),
+            ('🏖️ Holidays File',         'holidays.csv',              'Import holiday list (Date/Start Date/End Date/Type)', 3),
+            ('📅 Employee Leaves',       LEAVE_FILE,                  'Import employee leave records', 2),
         ]
 
-        for label, fname, hint in imports:
-            row = tk.Frame(p, bg=BG3, pady=8, padx=12)
+        for label, fname, hint, t_idx in imports:
+            row = tk.Frame(p, bg=BG2, pady=10, padx=12)
             row.pack(fill='x', padx=15, pady=4)
-            tk.Label(row, text=label, font=FONT_B, bg=BG3, fg=FG,  width=22, anchor='w').pack(side='left')
-            tk.Label(row, text=hint,  font=FONT_S, bg=BG3, fg=FG2, width=28, anchor='w').pack(side='left')
+            tk.Label(row, text=label, font=FONT_B, bg=BG2, fg=FG,  width=22, anchor='w').pack(side='left')
+            tk.Label(row, text=hint,  font=FONT_S, bg=BG2, fg=FG2, width=32, anchor='w').pack(side='left')
             # Drag & drop zone label
-            dnd_lbl = tk.Label(row, text='⬇ Drop here', font=FONT_S, bg='#1e3a4a',
+            dnd_lbl = tk.Label(row, text='⬇ Drop here', font=FONT_S, bg=BG3,
                                fg=ACCENT, width=12, relief='flat', pady=4, cursor='hand2')
             dnd_lbl.pack(side='left', padx=6)
             self._make_drop_target(dnd_lbl, row, fname)
+            
+            # Quick Edit Button
+            if t_idx is not None:
+                self._btn(row, '📝 Edit', BG3, lambda i=t_idx: self.main_nb.select(i)).pack(side='right', padx=4)
             self._btn(row, '📂 Browse', ACCENT2,
                       lambda f=fname: self._browse_import(f)).pack(side='right', padx=4)
             # Status indicator
-            exists = '✅ Exists' if os.path.exists(fname) else '❌ Missing'
-            color  = SUCCESS if os.path.exists(fname) else DANGER
-            tk.Label(row, text=exists, font=FONT_S, bg=BG3, fg=color, width=10).pack(side='right', padx=4)
+            if fname == 'holidays.csv':
+                exists_bool = os.path.exists('holidays.csv') or os.path.exists('holidays.xlsx')
+            else:
+                exists_bool = os.path.exists(fname)
+            exists = '✅ Exists' if exists_bool else '❌ Missing'
+            color  = SUCCESS if exists_bool else DANGER
+            tk.Label(row, text=exists, font=FONT_S, bg=BG2, fg=color, width=10).pack(side='right', padx=4)
 
         # ── Special row: Employee Holidays (HR Excel) ──────────────────────────
-        hr_row = tk.Frame(p, bg='#1e2d1e', pady=8, padx=12)  # slightly different bg to stand out
-        hr_row.pack(fill='x', padx=15, pady=4)
-        tk.Label(hr_row, text='Employee Holidays\n(HR Excel)',
-                 font=FONT_B, bg='#1e2d1e', fg='#86efac', width=22, anchor='w').pack(side='left')
+        hr_row = tk.Frame(p, bg=BG2, pady=10, padx=12, highlightthickness=1, highlightbackground=SUCCESS)
+        hr_row.pack(fill='x', padx=15, pady=6)
+        tk.Label(hr_row, text='📁 Employee Holidays\n(HR Excel)',
+                 font=FONT_B, bg=BG2, fg=SUCCESS, width=22, anchor='w').pack(side='left')
         tk.Label(hr_row, text='Planned & Unplanned leaves from HR system',
-                 font=FONT_S, bg='#1e2d1e', fg=FG2, width=28, anchor='w').pack(side='left')
-        hr_dnd = tk.Label(hr_row, text='⬇ Drop here', font=FONT_S, bg='#1e3a4a',
+                 font=FONT_S, bg=BG2, fg=FG2, width=32, anchor='w').pack(side='left')
+        hr_dnd = tk.Label(hr_row, text='⬇ Drop here', font=FONT_S, bg=BG3,
                           fg=ACCENT, width=12, relief='flat', pady=4, cursor='hand2')
         hr_dnd.pack(side='left', padx=6)
         self._make_hr_drop_target(hr_dnd)
         self._btn(hr_row, '📂 Browse', SUCCESS,
                   self._browse_hr_excel).pack(side='right', padx=4)
+        self._btn(hr_row, '📝 Edit Records', BG3, lambda: self.main_nb.select(2)).pack(side='right', padx=4)
         count_lbl_text = f'📋 {len(self._load_leaves())} records' if os.path.exists(LEAVE_FILE) else '❌ No leaves yet'
         count_color    = SUCCESS if os.path.exists(LEAVE_FILE) else DANGER
-        tk.Label(hr_row, text=count_lbl_text, font=FONT_S, bg='#1e2d1e',
+        tk.Label(hr_row, text=count_lbl_text, font=FONT_S, bg=BG2,
                  fg=count_color, width=14).pack(side='right', padx=4)
+
+
+        # --- NEW: Live SQL Sync UI Section ---
+        sync_f = tk.Frame(p, bg=BG2, padx=10)
+        sync_f.pack(fill='x', padx=15, pady=(15, 0))
+        self._section(sync_f, '🔄  Real-Time Machine Learning Sync').pack(fill='x', anchor='w')
+        
+        sm_lbl = tk.Label(sync_f, text="Automatically pulls ONLY missing logs from the SQL Database\nand merges them into your AI Model without downloading the whole past history again.", font=FONT_S, bg=BG2, fg=FG2, justify='left')
+        sm_lbl.pack(anchor='w', pady=(8,4))
+        
+        btn_strip = tk.Frame(sync_f, bg=BG2)
+        btn_strip.pack(fill='x', pady=5)
+        
+        self.sync_btn = self._btn(btn_strip, '⚡ Sync Latest Logs', SUCCESS, self._trigger_live_sync)
+        self.sync_btn.pack(side='left')
+        
+        self.sync_status_lbl = tk.Label(btn_strip, text="", font=FONT, bg=BG2, fg=WARNING)
+        self.sync_status_lbl.pack(side='left', padx=10)
+
 
         # Preview section
         self._section(p, '👁  Preview Imported File').pack(fill='x', padx=15, pady=(14,2))
@@ -334,29 +515,159 @@ class App(TkinterDnD.Tk):
         self.import_tree_frame.pack(fill='both', expand=True, padx=15, pady=(4,10))
         self.import_tree = None
 
+    def _trigger_live_sync(self):
+        auth = self.db_auth.get()
+        user = self.db_user.get()
+        pwd = self.db_pass.get()
+        server = self.db_server.get() # Corrected from db_serv
+        db = self.db_name.get()
+        table = self.db_table.get() # Corrected from db_tbl
+        
+        if not all([server, db, table]):
+            messagebox.showerror('Error', 'Please fill Server, Database, and Table fields in the section above first.')
+            return
+            
+        self.sync_btn.config(state='disabled')
+        self.sync_status_lbl.config(text="Status: Finding last log date...", fg=WARNING)
+        
+        def worker():
+            try:
+                # 1. Determine the last logged date
+                last_date = None
+                log_file = 'log_data.csv'
+                if os.path.exists(log_file):
+                    # We only need the last row's date to know where to resume
+                    try:
+                        import subprocess
+                        # Read the last 50 lines to be safe and find the latest date
+                        if os.name == 'nt':
+                            res = subprocess.run(['powershell', '-Command', f"Get-Content {log_file} -Tail 50"], capture_output=True, text=True)
+                            lines = res.stdout.strip().split('\n')
+                        else:
+                            res = subprocess.run(['tail', '-n', '50', log_file], capture_output=True, text=True)
+                            lines = res.stdout.strip().split('\n')
+                            
+                        if lines and lines[-1].strip():
+                            import pandas as pd
+                            with open('_tmp_tail.csv', 'w', encoding='utf-8') as tf:
+                                tf.write('\n'.join(lines))
+                            
+                            df_tail = pd.read_csv('_tmp_tail.csv', header=None, on_bad_lines='skip')
+                            # Look for any column that looks like a datetime
+                            for col in df_tail.columns:
+                                try:
+                                    tail_dates = pd.to_datetime(df_tail[col], errors='coerce').dropna()
+                                    if len(tail_dates) > 0:
+                                        last_date = tail_dates.max().strftime('%Y-%m-%d')
+                                        break
+                                except:
+                                    pass
+                            
+                            if os.path.exists('_tmp_tail.csv'): os.remove('_tmp_tail.csv')
+                    except Exception as e:
+                        print(f"Tail extraction failed: {e}")
+                
+                if not last_date:
+                    self.after(0, lambda: self.sync_status_lbl.config(text="Status: No history found. Please run a full fetch first.", fg=DANGER))
+                    return
+
+                # Assuming today is the target
+                from datetime import date
+                today = date.today().strftime('%Y-%m-%d')
+                
+                if last_date >= today:
+                    self.after(0, lambda: self.sync_status_lbl.config(text=f"Status: SQL Data is already Synced up to {last_date}!", fg=SUCCESS))
+                    return
+                
+                self.after(0, lambda: self.sync_status_lbl.config(text=f"Status: Fetching missing SQL logs ({last_date} to {today})...", fg=WARNING))
+                
+                # 2. Append fetching
+                cmd = [sys.executable, 'fetch_from_db.py', 
+                       '--server', server, '--database', db, '--table', table,
+                       '--from', last_date, '--to', today, '--output', '_tmp_new_logs.csv']
+                       
+                if auth == 'sql':
+                    cmd.extend(['--auth', 'sql', '--user', user, '--password', pwd])
+                else:
+                    cmd.extend(['--auth', 'windows'])
+                    
+                import subprocess
+                res = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                
+                if res.returncode != 0:
+                    self.after(0, lambda: messagebox.showerror("Fetch Error", res.stderr))
+                    self.after(0, lambda: self.sync_status_lbl.config(text="Status: SQL Filter Failed.", fg=DANGER))
+                    return
+                
+                # If 0 rows fetched
+                if 'SUCCESS: 0 rows fetched' in res.stdout or not os.path.exists('_tmp_new_logs.csv'):
+                    self.after(0, lambda: self.sync_status_lbl.config(text=f"Status: SQL Database is identical. No new logins found.", fg=SUCCESS))
+                    return
+                
+                # Append to existing log_data.csv
+                self.after(0, lambda: self.sync_status_lbl.config(text=f"Status: Updating CSVs and Retraining ML Models...", fg=WARNING))
+                
+                with open('_tmp_new_logs.csv', 'r', encoding='utf-8') as f_new, open('log_data.csv', 'a', encoding='utf-8') as f_old:
+                    f_old.write(f_new.read())
+                    
+                if os.path.exists('_tmp_new_logs.csv'): os.remove('_tmp_new_logs.csv')
+                
+                # Run the whole run_project.py pipeline smoothly in background
+                res_pl = subprocess.run([sys.executable, 'run_project.py'], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                
+                if res_pl.returncode == 0:
+                    self.after(0, lambda: self.sync_status_lbl.config(text=f"Status: Active Model Sync Complete! Graphs auto-refreshed.", fg=SUCCESS))
+                    # Auto-refresh the graphs dashboard immediately so real-time images pop up!
+                    self.after(0, self._refresh_graphs_list)
+                else:
+                    self.after(0, lambda: self.sync_status_lbl.config(text=f"Status: Pipeline completed with warnings.", fg=WARNING))
+                    self.after(0, self._refresh_graphs_list)
+                    
+            except Exception as e:
+                 self.after(0, lambda: self.sync_status_lbl.config(text=f"Error: {e}", fg=DANGER))
+            finally:
+                 self.after(0, lambda: self.sync_btn.config(state='normal'))
+                 
+        import threading
+        import sys
+        import os
+        threading.Thread(target=worker, daemon=True).start()
+
+
     def _make_drop_target(self, widget, row_frame, target_filename):
         """Register a widget as a drag-and-drop target for a specific file."""
         def on_drop(event):
-            # tkinterdnd2 returns path(s) — strip braces for paths with spaces
-            raw = event.data.strip()
-            if raw.startswith('{') and raw.endswith('}'):
-                raw = raw[1:-1]
-            path = raw
+            print(f"DEBUG: Drop detected! Data: {event.data}")
+            # Clean up the path from tkinterdnd2 (it often adds {} around paths with spaces)
+            path = event.data.strip()
+            if path.startswith('{') and path.endswith('}'):
+                path = path[1:-1]
+            elif path.startswith('"') and path.endswith('"'):
+                path = path[1:-1]
+            
             if not os.path.exists(path):
-                messagebox.showerror('Drop Error', f'File not found: {path}'); return
+                messagebox.showerror('Drop Error', f'File not found:\n{path}'); return
             try:
-                shutil.copy2(path, os.path.join(os.getcwd(), target_filename))
+                # Handle holidays Excel files specially
+                actual_target = target_filename
+                if target_filename == 'holidays.csv' and path.lower().endswith(('.xlsx', '.xls')):
+                    actual_target = 'holidays.xlsx'
+                    if os.path.exists('holidays.csv'): os.remove('holidays.csv')
+                elif target_filename == 'holidays.csv' and path.lower().endswith('.csv'):
+                    if os.path.exists('holidays.xlsx'): os.remove('holidays.xlsx')
+                
+                shutil.copy2(path, os.path.join(os.getcwd(), actual_target))
                 # Flash the drop zone green to confirm
                 widget.configure(bg=SUCCESS, text='✅ Imported!')
-                self.after(2000, lambda: widget.configure(bg='#1e3a4a', text='⬇ Drop here'))
-                messagebox.showinfo('Imported ✅', f'File saved as  {target_filename}')
-                self.import_path_var.set(target_filename)
-                self._preview_file(target_filename)
+                self.after(2000, lambda: widget.configure(bg=BG3, text='⬇ Drop here'))
+                messagebox.showinfo('Imported ✅', f'File saved as  {actual_target}')
+                self.import_path_var.set(actual_target)
+                self._preview_file(actual_target)
             except Exception as e:
                 messagebox.showerror('Drop Error', str(e))
 
         def on_enter(event): widget.configure(bg=ACCENT2)
-        def on_leave(event): widget.configure(bg='#1e3a4a')
+        def on_leave(event): widget.configure(bg=BG3)
 
         widget.drop_target_register(DND_FILES)
         widget.dnd_bind('<<Drop>>',      on_drop)
@@ -366,17 +677,20 @@ class App(TkinterDnD.Tk):
     def _make_hr_drop_target(self, widget):
         """Drop target for the HR Excel holiday file — calls import_employee_holidays.py."""
         def on_drop(event):
-            raw = event.data.strip()
-            if raw.startswith('{') and raw.endswith('}'):
-                raw = raw[1:-1]
-            path = raw
+            # Clean up the path from tkinterdnd2
+            path = event.data.strip()
+            if path.startswith('{') and path.endswith('}'):
+                path = path[1:-1]
+            elif path.startswith('"') and path.endswith('"'):
+                path = path[1:-1]
+                
             if not os.path.exists(path):
-                messagebox.showerror('Drop Error', f'File not found: {path}'); return
+                messagebox.showerror('Drop Error', f'File not found:\n{path}'); return
             widget.configure(bg=SUCCESS, text='⏳ Importing...')
             self.after(100, lambda: self._run_hr_import(path, widget))
 
         def on_enter(event): widget.configure(bg=ACCENT2)
-        def on_leave(event): widget.configure(bg='#1e3a4a')
+        def on_leave(event): widget.configure(bg=BG3)
 
         widget.drop_target_register(DND_FILES)
         widget.dnd_bind('<<Drop>>',      on_drop)
@@ -402,7 +716,7 @@ class App(TkinterDnD.Tk):
                 # Parse added/skipped from output
                 added   = next((l for l in output.splitlines() if 'Added' in l), '')
                 if widget:
-                    self.after(0, lambda: widget.configure(bg='#1e3a4a', text='⬇ Drop here'))
+                    self.after(0, lambda: widget.configure(bg=BG3, text='⬇ Drop here'))
                 self.import_path_var.set(LEAVE_FILE)
                 self._preview_file(LEAVE_FILE)
                 messagebox.showinfo('HR Holidays Imported ✅',
@@ -410,21 +724,29 @@ class App(TkinterDnD.Tk):
                 self._refresh_leaves()
             except Exception as e:
                 if widget:
-                    self.after(0, lambda: widget.configure(bg='#1e3a4a', text='⬇ Drop here'))
+                    self.after(0, lambda: widget.configure(bg=BG3, text='⬇ Drop here'))
                 messagebox.showerror('Import Error', str(e))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _browse_import(self, target_filename):
         path = filedialog.askopenfilename(
-            title=f'Select file to import as {target_filename}',
+            title=f'Select file to import',
             filetypes=[('CSV/Excel', '*.csv *.xlsx *.xls'), ('All', '*.*')])
         if not path: return
         try:
-            shutil.copy2(path, os.path.join(os.getcwd(), target_filename))
-            messagebox.showinfo('Imported ✅', f'File saved as {target_filename}')
-            self.import_path_var.set(target_filename)
-            self._preview_file(target_filename)
+            # Handle holidays Excel files specially
+            actual_target = target_filename
+            if target_filename == 'holidays.csv' and path.lower().endswith(('.xlsx', '.xls')):
+                actual_target = 'holidays.xlsx'
+                if os.path.exists('holidays.csv'): os.remove('holidays.csv')
+            elif target_filename == 'holidays.csv' and path.lower().endswith('.csv'):
+                if os.path.exists('holidays.xlsx'): os.remove('holidays.xlsx')
+
+            shutil.copy2(path, os.path.join(os.getcwd(), actual_target))
+            messagebox.showinfo('Imported ✅', f'File saved as {actual_target}')
+            self.import_path_var.set(actual_target)
+            self._preview_file(actual_target)
         except Exception as e:
             messagebox.showerror('Error', str(e))
 
@@ -607,7 +929,7 @@ class App(TkinterDnD.Tk):
     # TAB 3 — Employee Leaves
     # ══════════════════════════════════════════════════════════════════════════
     def _build_leave_tab(self):
-        p = self.tab_leave
+        p = self.tab_leave.scrollable_frame
         self._section(p, '📝  Submit New Leave').pack(fill='x', padx=15, pady=(12,4))
 
         form = tk.Frame(p, bg=BG2, padx=10)
@@ -618,7 +940,8 @@ class App(TkinterDnD.Tk):
                      ).grid(row=r, column=c, sticky='w', padx=6, pady=4)
         def ent(r, c, default='', w=18):
             e = tk.Entry(form, font=FONT, width=w, bg=BG3, fg=FG,
-                         insertbackground='white', relief='flat', bd=4)
+                         insertbackground=ACCENT, relief='flat', bd=0, highlightthickness=1,
+                         highlightbackground=BG3, highlightcolor=ACCENT)
             e.grid(row=r, column=c, sticky='ew', padx=6, pady=4)
             e.insert(0, default)
             return e
@@ -661,7 +984,9 @@ class App(TkinterDnD.Tk):
         for c in cols:
             self.lv_tree.heading(c, text=c)
             self.lv_tree.column(c, width=col_widths.get(c, 120), anchor='center')
-        self.lv_tree.tag_configure('approved',  foreground='#86efac')
+        self.lv_tree.tag_configure('approved',  foreground=SUCCESS)
+        self.lv_tree.tag_configure('pending',   foreground=WARNING)
+        self.lv_tree.tag_configure('rejected',  foreground=DANGER)
         self.lv_tree.tag_configure('cancelled', foreground='#fca5a5')
         self.lv_tree.tag_configure('pending',   foreground='#fde68a')
 
@@ -928,6 +1253,68 @@ class App(TkinterDnD.Tk):
         except Exception:
             return pd.DataFrame()
 
+    def _run_single_day_detail(self):
+        day = self.bt_test_start.get().strip()
+        try:
+            datetime.strptime(day, '%Y-%m-%d')
+        except:
+            messagebox.showerror('Error', 'Invalid date for detail report.'); return
+            
+        self.bt_status.config(text=f'Generating detailed report for {day}...', fg=WARNING)
+        self.update()
+        
+        def job():
+            try:
+                # 1. Run prediction for that day
+                cmd = [sys.executable, 'predict_future.py', day, day, '--window', 'all']
+                subprocess.run(cmd, check=True, capture_output=True)
+                
+                # 2. Find the generated CSV
+                csv_file = f'backtest_all_{day}_to_{day}.csv'
+                if not os.path.exists(csv_file):
+                    self.bt_status.config(text="CSV Error: File not found", fg=DANGER)
+                    return
+                
+                # 3. Use matplotlib to generate the 3-panel plot
+                df = pd.read_csv(csv_file)
+                df['Time Interval'] = pd.to_datetime(df['Time Interval'])
+                
+                fig, axes = plt.subplots(3, 1, figsize=(15, 18), sharex=True)
+                configs = [
+                    (0, '15m Window', 'PREDICTED LOGIN COUNT', 'Login Count', '#3b82f6'),
+                    (1, '30m Window', 'PREDICTED LOGIN 30M',   'Login 30m',   '#f43f5e'),
+                    (2, '60m Window', 'PREDICTED LOGIN 60M',   'Login 60m',   '#10b981')
+                ]
+                for i, title, pred, actual, color in configs:
+                    ax = axes[i]
+                    ax.plot(df['Time Interval'], df[pred], label=f'Predicted {title}', color=color, linewidth=2.5)
+                    if actual in df.columns:
+                        ax.plot(df['Time Interval'], df[actual], label=f'Actual {title}', color='gray', alpha=0.3, linewidth=2)
+                    ax.set_title(title, fontsize=14, fontweight='bold')
+                    ax.legend(); ax.grid(True, alpha=0.5)
+
+                plt.suptitle(f"Detailed Day Analysis: {day}", fontsize=18, fontweight='bold')
+                import matplotlib.dates as mdates
+                plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=1))
+                plt.xticks(rotation=45)
+                plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                
+                png_file = f"detail_report_{day}.png"
+                plt.savefig(png_file)
+                plt.close()
+                
+                self.after(0, lambda: self._on_detail_done(png_file))
+            except Exception as e:
+                self.after(0, lambda: self.bt_status.config(text=f"Error: {e}", fg=DANGER))
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _on_detail_done(self, png_file):
+        self.bt_status.config(text=f"Success! Saved to {png_file}", fg=SUCCESS)
+        self._refresh_graphs_list()
+        messagebox.showinfo('Report Ready', f'Detailed report for the day has been saved as:\n{png_file}\n\nYou can view it in the GRAPHS tab.')
+
     def _refresh_leaves(self):
         for r in self.lv_tree.get_children(): self.lv_tree.delete(r)
         # Try HR-format first (imported via Import button)
@@ -966,35 +1353,505 @@ class App(TkinterDnD.Tk):
             ))
 
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 3.5 — Company Holidays
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_holiday_tab(self):
+        p = self.tab_holiday.scrollable_frame
+        self._section(p, '📝  Add Company Holiday').pack(fill='x', padx=15, pady=(12,4))
+
+        form = tk.Frame(p, bg=BG2, padx=10)
+        form.pack(fill='x', padx=15, pady=4)
+
+        def lbl(t, r, c):
+            tk.Label(form, text=t, font=FONT, bg=BG2, fg=FG2, anchor='w'
+                     ).grid(row=r, column=c, sticky='w', padx=6, pady=4)
+        def ent(r, c, default='', w=18):
+            e = tk.Entry(form, font=FONT, width=w, bg=BG3, fg=FG,
+                         insertbackground=ACCENT, relief='flat', bd=0, highlightthickness=1,
+                         highlightbackground=BG3, highlightcolor=ACCENT)
+            e.grid(row=r, column=c, sticky='ew', padx=6, pady=4)
+            e.insert(0, default)
+            return e
+
+        today = str(date.today())
+        lbl('Description *',            0, 0); self.hol_desc  = ent(0, 1, w=24)
+        lbl('Start Date (YYYY-MM-DD) *',0, 2); self.hol_start = ent(0, 3, today)
+        lbl('End Date   (YYYY-MM-DD) *',1, 0); self.hol_end   = ent(1, 1, today)
+
+        lbl('Holiday Type', 1, 2)
+        self.hol_type = tk.StringVar(value='Mandatory')
+        ttk.Combobox(form, textvariable=self.hol_type, font=FONT, width=20, state='readonly',
+                     values=['Mandatory', 'Optional']
+                     ).grid(row=1, column=3, sticky='ew', padx=6, pady=4)
+
+        bf = tk.Frame(p, bg=BG2)
+        bf.pack(pady=8)
+        self._btn(bf, '✔ Add Holiday',    ACCENT2, self._submit_holiday).pack(side='left', padx=5)
+        self._btn(bf, '📥 Import CSV/Excel', SUCCESS, self._import_holidays).pack(side='left', padx=5)
+        self._btn(bf, '🗑 Delete Selected', DANGER,  self._delete_holiday).pack(side='left', padx=5)
+
+        self._section(p, '🏢  All Company Holidays').pack(fill='x', padx=15, pady=(8,2))
+
+        lf = tk.Frame(p, bg=BG2)
+        lf.pack(fill='both', expand=True, padx=15, pady=(0,10))
+        cols = ('Start Date', 'End Date', 'Description', 'Type')
+        self.hol_tree = ttk.Treeview(lf, columns=cols, show='headings', height=10)
+        col_widths = {'Start Date': 120, 'End Date': 120, 'Description': 300, 'Type': 150}
+        for c in cols:
+            self.hol_tree.heading(c, text=c)
+            self.hol_tree.column(c, width=col_widths.get(c, 150), anchor='center')
+            
+        self.hol_tree.tag_configure('mandatory', foreground=SUCCESS)
+        self.hol_tree.tag_configure('optional',  foreground=WARNING)
+
+        vsb = ttk.Scrollbar(lf, orient='vertical', command=self.hol_tree.yview)
+        self.hol_tree.configure(yscrollcommand=vsb.set)
+        self.hol_tree.pack(side='left', fill='both', expand=True)
+        vsb.pack(side='right', fill='y')
+        self._refresh_holidays()
+
+    def _submit_holiday(self):
+        desc  = self.hol_desc.get().strip()
+        start = self.hol_start.get().strip()
+        end   = self.hol_end.get().strip()
+        htype = self.hol_type.get()
+        if not desc:
+            messagebox.showerror('Missing', 'Holiday Description is required.'); return
+        try:
+            s = datetime.strptime(start, '%Y-%m-%d').date()
+            e = datetime.strptime(end,   '%Y-%m-%d').date()
+        except ValueError:
+            messagebox.showerror('Date Error', 'Use YYYY-MM-DD format.'); return
+        if e < s:
+            messagebox.showerror('Date Error', 'End Date before Start Date.'); return
+
+        df = self._load_holidays_df()
+        new_row = pd.DataFrame([{
+            'Start Date': str(s), 'End Date': str(e), 'Description': desc, 'Type': htype
+        }])
+        df = pd.concat([df, new_row], ignore_index=True)
+        df.to_csv('holidays.csv', index=False)
+        days = (e - s).days + 1
+        messagebox.showinfo('Added ✅', f'{desc}: {days} day(s) added.')
+        
+        # Reset UI
+        self.hol_desc.delete(0, tk.END)
+        self.hol_start.delete(0, tk.END)
+        self.hol_end.delete(0, tk.END)
+        today = str(date.today())
+        self.hol_start.insert(0, today)
+        self.hol_end.insert(0, today)
+        
+        self._refresh_holidays()
+
+    def _delete_holiday(self):
+        selected = self.hol_tree.selection()
+        if not selected:
+            messagebox.showinfo('Select', 'Select a row first.'); return
+        if not messagebox.askyesno('Delete', 'Delete selected holiday(s)?'): return
+        
+        df = self._load_holidays_df()
+        
+        # Extract the real CSV row indices we embedded in the visual Treeview
+        csv_indices = [int(i) for i in selected]
+        
+        df = df.drop(index=csv_indices).reset_index(drop=True)
+        df.to_csv('holidays.csv', index=False)
+        self._refresh_holidays()
+
+    def _load_login_logs(self):
+        if not os.path.exists('login_logs.csv'):
+            messagebox.showwarning('Missing', 'login_logs.csv not found.')
+            return None
+        try:
+            return pd.read_csv('login_logs.csv')
+        except Exception as e:
+            messagebox.showerror('Error', f'Could not read login_logs.csv: {e}')
+            return None
+
+    def _load_holidays_df(self):
+        if os.path.exists('holidays.csv'):
+            df = pd.read_csv('holidays.csv')
+            
+            # Auto-upgrade purely 'Date' format to 'Start Date / End Date' format for internal UI consistency
+            if 'Date' in df.columns and 'Start Date' not in df.columns:
+                df['Start Date'] = df['Date']
+                df['End Date']   = df['Date']
+                if 'Type' not in df.columns: df['Type'] = 'Mandatory'
+                if 'Description' not in df.columns: df['Description'] = 'Holiday'
+                df = df[['Start Date', 'End Date', 'Description', 'Type']]
+            return df
+        return pd.DataFrame(columns=['Start Date', 'End Date', 'Description', 'Type'])
+
+    def _refresh_holidays(self):
+        for r in self.hol_tree.get_children(): self.hol_tree.delete(r)
+        df = self._load_holidays_df()
+        
+        # We must keep track of the original true CSV index so deletion is accurate
+        # even after the dataframe is visually sorted.
+        df['Original_Index'] = df.index
+        
+        # Sort by start date
+        if 'Start Date' in df.columns and not df.empty:
+            df['SortDate'] = pd.to_datetime(df['Start Date'], errors='coerce')
+            df = df.sort_values(by='SortDate').drop(columns=['SortDate'])
+
+        for _, row in df.iterrows():
+            tag = 'mandatory' if str(row.get('Type', '')).strip().lower() == 'mandatory' else 'optional'
+            
+            # Insert using the original DataFrame row index as the internal item ID (iid)
+            # This allows safe deletion regardless of visual sort order.
+            real_index = str(row['Original_Index'])
+            self.hol_tree.insert('', 'end', iid=real_index, tags=(tag,), values=(
+                row.get('Start Date', row.get('Date', '')),
+                row.get('End Date',   row.get('Date', '')),
+                row.get('Description', ''),
+                row.get('Type', 'Mandatory')
+            ))
+
+    def _import_holidays(self):
+        path = filedialog.askopenfilename(
+            title='Select a Holiday Excel / CSV File',
+            filetypes=[('Excel/CSV', '*.xlsx *.xls *.csv'), ('All', '*.*')])
+        if not path: return
+        
+        try:
+            if path.lower().endswith(('.xlsx', '.xls')):
+                imported_df = pd.read_excel(path, engine='openpyxl')
+            else:
+                imported_df = pd.read_csv(path, encoding='utf-8')
+                
+            cols = [col.strip().lower() for col in imported_df.columns]
+            imported_df.columns = cols
+            
+            new_holidays = []
+            
+            # Standardize based on format
+            if 'start date' in cols and 'end date' in cols:
+                for _, row in imported_df.iterrows():
+                    new_holidays.append({
+                        'Start Date': str(pd.to_datetime(row['start date']).date()),
+                        'End Date':   str(pd.to_datetime(row['end date']).date()),
+                        'Description': str(row.get('description', 'Imported Holiday')).strip(),
+                        'Type': str(row.get('type', 'Mandatory')).strip().capitalize()
+                    })
+            elif 'date' in cols:
+                for _, row in imported_df.iterrows():
+                    new_holidays.append({
+                        'Start Date': str(pd.to_datetime(row['date']).date()),
+                        'End Date':   str(pd.to_datetime(row['date']).date()),
+                        'Description': str(row.get('description', 'Imported Holiday')).strip(),
+                        'Type': str(row.get('type', 'Mandatory')).strip().capitalize()
+                    })
+            else:
+                messagebox.showerror('Format Error', 'File must contain either a "Date" column OR "Start Date" and "End Date" columns.')
+                return
+                
+            if not new_holidays:
+                messagebox.showwarning('Empty', 'No valid dates found in file.')
+                return
+                
+            new_df = pd.DataFrame(new_holidays)
+            current_df = self._load_holidays_df()
+            final_df = pd.concat([current_df, new_df], ignore_index=True)
+            
+            # Deduplicate exact matches
+            final_df = final_df.drop_duplicates(subset=['Start Date', 'End Date', 'Description'])
+            final_df.to_csv('holidays.csv', index=False)
+            
+            added = len(final_df) - len(current_df)
+            messagebox.showinfo('Imported ✅', f'Successfully imported {added} new holiday record(s).')
+            self._refresh_holidays()
+            
+        except Exception as e:
+            messagebox.showerror('Import Error', f'Failed to process file:\n{str(e)}')
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 3.8 — Model Backtest
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_backtest_tab(self):
+        p = self.tab_backtest.scrollable_frame
+        self._section(p, '🧪  Blind Backtest Configuration').pack(fill='x', padx=15, pady=(12,4))
+
+        form = tk.Frame(p, bg=BG2, padx=10)
+        form.pack(fill='x', padx=15, pady=4)
+
+        def lbl(t, r, c):
+            tk.Label(form, text=t, font=FONT, bg=BG2, fg=FG2, anchor='w'
+                     ).grid(row=r, column=c, sticky='w', padx=6, pady=4)
+        def ent(r, c, default='', w=16):
+            e = tk.Entry(form, font=FONT, width=w, bg=BG3, fg=FG,
+                         insertbackground=ACCENT, relief='flat', bd=0, highlightthickness=1,
+                         highlightbackground=BG3, highlightcolor=ACCENT)
+            e.grid(row=r, column=c, sticky='e', padx=6, pady=4)
+            e.insert(0, default)
+            return e
+
+        # Train Dates
+        lbl('Train Model FROM (YYYY-MM-DD):', 0, 0); self.bt_train_start = ent(0, 1, '2025-12-01')
+        lbl('Train Model TO   (YYYY-MM-DD):', 1, 0); self.bt_train_end   = ent(1, 1, '2026-02-11')
+
+        # Test Dates
+        lbl('Blind Test FROM  (YYYY-MM-DD):', 0, 2); self.bt_test_start  = ent(0, 3, '2026-02-12')
+        lbl('Blind Test TO    (YYYY-MM-DD):', 1, 2); self.bt_test_end    = ent(1, 3, '2026-03-16')
+
+        bf = tk.Frame(p, bg=BG2)
+        bf.pack(pady=10)
+        self.bt_run_btn = self._btn(bf, '🚀 Run Live Backtest Analysis', ACCENT2, self._run_backtest)
+        self.bt_run_btn.pack(side='left', padx=10)
+        
+        self.bt_detail_btn = self._btn(bf, '📅 Single-Day Detail Graph', SUCCESS, self._run_single_day_detail)
+        self.bt_detail_btn.pack(side='left', padx=10)
+        self._btn(bf, '📊 Batch Daily Graphs', ACCENT, self._run_batch_daily_graphs_backtest).pack(side='left', padx=10)
+
+        self.bt_status = tk.Label(bf, text='', font=FONT_S, bg=BG2, fg=WARNING)
+        self.bt_status.pack(side='left', padx=10)
+
+        # Results area
+        res_frame = tk.Frame(p, bg=BG2)
+        res_frame.pack(fill='both', expand=True, padx=15, pady=10)
+
+        self.bt_metrics = tk.Label(res_frame, text='Run analysis to see errors...', font=FONT_B, bg=BG2, fg=SUCCESS, justify='left')
+        self.bt_metrics.pack(fill='x', pady=5)
+
+        self.bt_img_label = tk.Label(res_frame, bg=BG2)
+        self.bt_img_label.pack(fill='both', expand=True, pady=10)
+        self.bt_img_ref = None
+
+    def _run_backtest(self):
+        ts = self.bt_train_start.get().strip()
+        te = self.bt_train_end.get().strip()
+        vs = self.bt_test_start.get().strip()
+        ve = self.bt_test_end.get().strip()
+
+        if not (ts and te and vs and ve):
+            messagebox.showerror("Error", "All date fields are required.")
+            return
+
+        self.bt_run_btn.config(state='disabled')
+        self.bt_status.config(text="Status: Training Model... Please wait.", fg=WARNING)
+        self.bt_metrics.config(text="")
+        self.bt_img_label.config(image='')
+
+        def worker():
+            try:
+                cmd = [sys.executable, 'test_model_accuracy.py', ts, te, vs, ve]
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                
+                mae, rmse, peak_a, peak_p = 'N/A', 'N/A', 'N/A', 'N/A'
+                
+                for line in proc.stdout:
+                    line = line.strip()
+                    if line.startswith("GUI_METRIC:MAE:"): mae = line.split(":")[-1]
+                    elif line.startswith("GUI_METRIC:RMSE:"): rmse = line.split(":")[-1]
+                    elif line.startswith("GUI_METRIC:PEAK_ACTUAL:"): peak_a = line.split(":")[-1]
+                    elif line.startswith("GUI_METRIC:PEAK_PREDICTED:"): peak_p = line.split(":")[-1]
+                
+                proc.wait()
+                
+                if proc.returncode != 0:
+                    err = proc.stderr.read()
+                    self.after(0, lambda: messagebox.showerror("Backtest Failed", f"Execution Error:\n{err}"))
+                    self.after(0, lambda: self.bt_status.config(text="Status: Failed.", fg=DANGER))
+                else:
+                    metrics_str = f"✅ Analysis Complete!\n\n⭐ Mean Absolute Error: {mae} users | Root Mean Squared Error: {rmse} users\n⭐ Peak Actual: {peak_a} | Peak Predicted: {peak_p}"
+                    self.after(0, lambda: self._show_backtest_results(metrics_str))
+            
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Backtest Error", str(e)))
+                self.after(0, lambda: self.bt_status.config(text="Status: Error.", fg=DANGER))
+            finally:
+                self.after(0, lambda: self.bt_run_btn.config(state='normal'))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ── Batch Daily Graphs Logic ──────────────────────────────────────────────
+    def _run_batch_daily_graphs_backtest(self):
+        start = self.bt_test_start.get().strip()
+        end   = self.bt_test_end.get().strip()
+        self._run_batch_daily_graphs(start, end, is_backtest=True)
+
+    def _run_batch_daily_graphs_predict(self):
+        start = self.pred_start.get().strip()
+        end   = self.pred_end.get().strip()
+        self._run_batch_daily_graphs(start, end, is_backtest=False)
+
+    def _run_batch_daily_graphs(self, start_str, end_str, is_backtest=True):
+        if not start_str or not end_str:
+            messagebox.showerror('Error', 'Please enter both Start and End dates.'); return
+        
+        # 1. Load Data
+        df_proc = None
+        if os.path.exists('processed_data.csv'):
+            try:
+                df_proc = pd.read_csv('processed_data.csv')
+                df_proc['Time Interval'] = pd.to_datetime(df_proc['Time Interval'])
+            except: pass
+
+        def worker():
+            try:
+                self.after(0, lambda: self.bt_status.config(text="Status: Generating Batch Graphs...", fg=WARNING))
+                
+                win = 'all'
+                fname = f"backtest_{win}_{start_str}_to_{end_str}.csv"
+                if not is_backtest:
+                    fname = f"prediction_{start_str}_to_{end_str}.csv" # Fallback if standard naming
+
+                # Try finding any file that matches the dates if standard fails
+                if not os.path.exists(fname):
+                    possible = [f for f in os.listdir('.') if start_str in f and end_str in f and f.endswith('.csv')]
+                    if possible: fname = possible[0]
+
+                if not os.path.exists(fname):
+                    # Run prediction to generate the CSV if missing
+                    # self.after(0, lambda: self._log(f"Generating missing result file: {fname}..."))
+                    cmd = [sys.executable, 'predict_future.py', start_str, end_str, '--window', win]
+                    subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                
+                # Check again
+                if not os.path.exists(fname):
+                    self.after(0, lambda: messagebox.showerror("Error", f"Could not find or generate result file for {start_str} to {end_str}"))
+                    return
+
+                df_pred = pd.read_csv(fname)
+                df_pred['Time Interval'] = pd.to_datetime(df_pred['Time Interval'])
+                df_pred['Date'] = df_pred['Time Interval'].dt.date
+                
+                unique_dates = sorted(df_pred['Date'].unique())
+                total_days = len(unique_dates)
+                
+                if total_days == 0:
+                    self.after(0, lambda: messagebox.showinfo("No Data", "No prediction data found for this range."))
+                    return
+
+                for idx, d in enumerate(unique_dates):
+                    self.after(0, lambda i=idx+1: self.bt_status.config(text=f"Status: Generating Day {i}/{total_days} ({d})..."))
+                    
+                    day_pred = df_pred[df_pred['Date'] == d].copy()
+                    day_proc = None
+                    if df_proc is not None:
+                        day_proc = df_proc[df_proc['Time Interval'].dt.date == d].copy()
+
+                    # Generate 3-panel plot
+                    fig, axes = plt.subplots(3, 1, figsize=(12, 12))
+                    
+                    configs = [
+                        (axes[0], '15m', 'PREDICTED LOGIN COUNT', 'Login Count', 'Login Count (15m)'),
+                        (axes[1], '30m', 'PREDICTED LOGIN 30M', 'Login 30m', 'Login Count (30m)'),
+                        (axes[2], '60m', 'PREDICTED LOGIN 60M', 'Login 60m', 'Login Count (60m)')
+                    ]
+                    
+                    active_configs = [c for c in configs if c[2] in day_pred.columns]
+                    num_plots = len(active_configs)
+                    
+                    if num_plots == 0:
+                        continue # No data for this day
+
+                    # Dynamic height based on number of panels (e.g., 5 inches per panel)
+                    fig, axes = plt.subplots(num_plots, 1, figsize=(12, 5 * num_plots))
+                    
+                    # Convert to list if only one subplot to make it iterable
+                    if num_plots == 1: axes = [axes]
+
+                    for i, (ax, win_sz, pred_col, act_col, title) in enumerate(active_configs):
+                        # Plot Predicted
+                        ax.plot(day_pred['Time Interval'], day_pred[pred_col], label='Predicted', color='#8b5cf6', linewidth=2)
+                        
+                        # Plot Actual if available
+                        if day_proc is not None and not day_proc.empty and act_col in day_proc.columns:
+                            ax.plot(day_proc['Time Interval'], day_proc[act_col], label='Actual', color='gray', alpha=0.5, linestyle='--')
+                        
+                        ax.set_title(title, loc='left', fontsize=11, fontweight='bold', color=ACCENT)
+                        ax.legend(loc='upper right', frameon=False, fontsize=9)
+                        ax.grid(True, alpha=0.2)
+                        
+                        # Granular Time Axis
+                        ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+                        ax.xaxis.set_major_formatter(mdates.DateFormatter('%I %p'))
+                        plt.setp(ax.get_xticklabels(), rotation=0, fontsize=8)
+                        
+                    plt.suptitle(f"Detailed Daily Comparison: {d}", fontsize=16, fontweight='bold', color=BG2)
+                    plt.tight_layout(rect=[0, 0.03, 1, 0.96 if num_plots > 1 else 0.92])
+                    
+                    out_name = f"comparison_report_{d}.png"
+                    plt.savefig(out_name, dpi=100)
+                    plt.close(fig)
+
+                self.after(0, lambda: self.bt_status.config(text="Status: Batch Generation Complete!", fg=SUCCESS))
+                self.after(0, self._refresh_graphs_list)
+                self.after(0, lambda: messagebox.showinfo("Success", f"Generated {total_days} daily report(s) in the Graphs tab."))
+                
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.after(0, lambda: messagebox.showerror("Batch Error", f"Failed to generate graphs: {e}"))
+                self.after(0, lambda: self.bt_status.config(text="Status: Batch Generation Failed.", fg=DANGER))
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_backtest_results(self, metrics_text):
+        self.bt_status.config(text="Status: Complete! CSV and Graph rendered.", fg=SUCCESS)
+        self.bt_metrics.config(text=metrics_text)
+        
+        # Try loading the generated graph
+        try:
+            if os.path.exists('app_backtest_chart.png'):
+                import shutil
+                shutil.copy2('app_backtest_chart.png', '_tmp_app_backtest_chart.png')
+                img = Image.open('_tmp_app_backtest_chart.png')
+                # Resize for UI
+                view_w = 900
+                ratio = view_w / float(img.size[0])
+                view_h = int((float(img.size[1]) * float(ratio)))
+                img = img.resize((view_w, view_h), Image.LANCZOS)
+                
+                self.bt_img_ref = ImageTk.PhotoImage(img)
+                self.bt_img_label.config(image=self.bt_img_ref)
+        except Exception as e:
+            self.bt_status.config(text=f"Graph Error: {e}", fg=DANGER)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 4 — Results Viewer
     # ══════════════════════════════════════════════════════════════════════════
     def _build_results_tab(self):
-        p = self.tab_results
+        p = self.tab_results.scrollable_frame
         self._section(p, '📁  Saved Prediction Files').pack(fill='x', padx=15, pady=(12,4))
 
         top = tk.Frame(p, bg=BG2)
         top.pack(fill='x', padx=15, pady=4)
-        self.results_var = tk.StringVar()
-        self.results_cb  = ttk.Combobox(top, textvariable=self.results_var,
-                                        font=FONT, width=50, state='readonly')
-        self.results_cb.pack(side='left', padx=(0,8))
-        self._btn(top, '🔄 Refresh', BG3,    self._refresh_results).pack(side='left', padx=4)
-        self._btn(top, '👁 View',    ACCENT2, self._view_result).pack(side='left', padx=4)
-        self._btn(top, '📤 Export Excel', SUCCESS, self._export_result_excel).pack(side='left', padx=4)
+        
+        # Replace Combobox with Listbox + Scrollbar for multi-select
+        lb_frame = tk.Frame(top, bg=BG2)
+        lb_frame.pack(side='left', fill='x', expand=True, padx=(0,8))
+        
+        self.results_lb = tk.Listbox(lb_frame, font=FONT, height=5, bg=BG3, fg=FG,
+                                     selectmode='extended', relief='flat', bd=0, highlightthickness=0)
+        self.results_lb.pack(side='left', fill='x', expand=True)
+        
+        rsb = ttk.Scrollbar(lb_frame, orient='vertical', command=self.results_lb.yview)
+        rsb.pack(side='right', fill='y')
+        self.results_lb.configure(yscrollcommand=rsb.set)
 
-        self._section(p, '📊  Preview (first 200 rows)').pack(fill='x', padx=15, pady=(10,2))
+        btn_f = tk.Frame(top, bg=BG2)
+        btn_f.pack(side='right')
+        
+        self._btn(btn_f, '🔄 Refresh', BG3,    self._refresh_results).pack(fill='x', pady=2)
+        self._btn(btn_f, '👁 View',    ACCENT2, self._view_result).pack(fill='x', pady=2)
+        self._btn(btn_f, '📤 Export Excel', SUCCESS, self._export_result_excel).pack(fill='x', pady=2)
+        self._btn(btn_f, '🗑️ Delete', DANGER, self._delete_result).pack(fill='x', pady=2)
+        self._btn(btn_f, '💣 Delete All', DANGER, self._delete_all_results).pack(fill='x', pady=2)
+
+        self._section(p, '📊  Preview (first 2000 rows)').pack(fill='x', padx=15, pady=(10,2))
 
         rf = tk.Frame(p, bg=BG2)
         rf.pack(fill='both', expand=True, padx=15, pady=(0,10))
 
-        cols = ('Time Interval','Predicted Active Users','Leave Reduction',
-                'Adjusted Active Users','Servers Needed')
+        cols = ('Time Interval', 'PREDICTED LOGIN COUNT', 'PREDICTED LOGIN 30M', 'PREDICTED LOGIN 60M', 'PREDICTED ACTIVE USERS', 'Employees on Leave')
         self.res_tree = ttk.Treeview(rf, columns=cols, show='headings', height=14)
         for c in cols:
             self.res_tree.heading(c, text=c)
-            self.res_tree.column(c, width=150, anchor='center')
+            self.res_tree.column(c, width=155, anchor='center')
         vsb = ttk.Scrollbar(rf, orient='vertical',   command=self.res_tree.yview)
         hsb = ttk.Scrollbar(rf, orient='horizontal',  command=self.res_tree.xview)
         self.res_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -1005,56 +1862,105 @@ class App(TkinterDnD.Tk):
 
         self._refresh_results()
 
-    def _refresh_results(self):
-        files = sorted([f for f in os.listdir('.')
-                        if f.startswith('prediction_') and f.endswith('.csv')], reverse=True)
-        self.results_cb['values'] = files
-        if files and not self.results_var.get():
-            self.results_var.set(files[0])
+    def _delete_result(self):
+        selected_indices = self.results_lb.curselection()
+        if not selected_indices:
+            messagebox.showwarning('No Selection', 'Please select one or more files to delete.')
+            return
+            
+        files_to_delete = [self.results_lb.get(i) for i in selected_indices]
+        msg = f"Are you sure you want to delete {len(files_to_delete)} file(s)?\n" + "\n".join(files_to_delete[:10])
+        if len(files_to_delete) > 10: msg += "\n...and more"
+        
+        if messagebox.askyesno('Delete Results', msg + "\n\nThis cannot be undone."):
+            try:
+                for f in files_to_delete:
+                    if os.path.exists(f): os.remove(f)
+                self._refresh_results()
+                for i in self.res_tree.get_children(): self.res_tree.delete(i)
+                messagebox.showinfo('Deleted', f'{len(files_to_delete)} file(s) have been deleted.')
+            except Exception as e:
+                messagebox.showerror('Error', f'Could not delete file(s): {e}')
 
     def _view_result(self):
-        fname = self.results_var.get()
-        if not fname or not os.path.exists(fname):
-            messagebox.showinfo('Select', 'Select a file first.'); return
+        indices = self.results_lb.curselection()
+        if not indices: return
+        fname = self.results_lb.get(indices[0])
+        if not os.path.exists(fname): return
+        
         try:
-            df = pd.read_csv(fname, nrows=200)
+            df = pd.read_csv(fname)
+            for i in self.res_tree.get_children(): self.res_tree.delete(i)
+            
+            # Match columns with the Treeview's defined columns
+            display_cols = [c for c in ('Time Interval', 'PREDICTED LOGIN COUNT', 'PREDICTED LOGIN 30M', 'PREDICTED LOGIN 60M', 'PREDICTED ACTIVE USERS', 'Employees on Leave')
+                            if c in df.columns]
+            
+            self.res_tree['columns'] = display_cols
+            for c in display_cols:
+                self.res_tree.heading(c, text=c)
+                self.res_tree.column(c, width=155, anchor='center')
+
+            for _, row in df[display_cols].head(2000).iterrows():
+                self.res_tree.insert('', 'end', values=list(row))
         except Exception as e:
-            messagebox.showerror('Error', str(e)); return
-
-        for r in self.res_tree.get_children(): self.res_tree.delete(r)
-
-        display_cols = [c for c in ('Time Interval','Predicted Active Users',
-                                    'Leave Reduction','Adjusted Active Users','Servers Needed')
-                        if c in df.columns]
-        self.res_tree['columns'] = display_cols
-        for c in display_cols:
-            self.res_tree.heading(c, text=c)
-            self.res_tree.column(c, width=155, anchor='center')
-
-        for _, row in df[display_cols].iterrows():
-            self.res_tree.insert('', 'end', values=list(row))
+            messagebox.showerror('Error', str(e))
 
     def _export_result_excel(self):
-        fname = self.results_var.get()
-        if not fname or not os.path.exists(fname):
-            messagebox.showinfo('Select', 'Select a file first.'); return
+        indices = self.results_lb.curselection()
+        if not indices: return
+        fname = self.results_lb.get(indices[0])
+        if not os.path.exists(fname): return
+        
         df  = pd.read_csv(fname)
         out = fname.replace('.csv', '.xlsx')
         df.to_excel(out, index=False, engine='openpyxl')
         messagebox.showinfo('Exported ✅', f'Saved as {out}')
 
+    def _delete_all_results(self):
+        files = [f for f in os.listdir('.') if (f.startswith('prediction_') or f.startswith('backtest_')) and f.endswith('.csv')]
+        if not files:
+            messagebox.showinfo('Info', 'No result files to delete.')
+            return
+        if messagebox.askyesno('Delete All', f'Are you sure you want to delete ALL {len(files)} result files?\nThis cannot be undone.'):
+            try:
+                for f in files: os.remove(f)
+                self._refresh_results()
+                for i in self.res_tree.get_children(): self.res_tree.delete(i)
+                messagebox.showinfo('Deleted', 'All result files have been deleted.')
+            except Exception as e:
+                messagebox.showerror('Error', f'Could not delete all files: {e}')
+
+    def _refresh_results(self):
+        files = sorted([f for f in os.listdir('.')
+                        if (f.startswith('prediction_') or f.startswith('backtest_')) and f.endswith('.csv')], reverse=True)
+        self.results_lb.delete(0, 'end')
+        for f in files:
+            self.results_lb.insert('end', f)
+
     # ── Helpers ────────────────────────────────────────────────────────────────
     def _section(self, parent, text):
-        f = tk.Frame(parent, bg=BG2)
-        tk.Label(f, text=text, font=FONT_B, bg=BG2, fg=ACCENT).pack(side='left', padx=4)
-        tk.Frame(f, bg=BG3, height=1).pack(side='left', fill='x', expand=True, padx=6)
+        bg_col = BG2 # Default for most tabs
+        f = tk.Frame(parent, bg=bg_col)
+        f.pack(fill='x', pady=(15, 8))
+        lbl = tk.Label(f, text=text.upper(), font=('Inter', 9, 'bold'), bg=bg_col, fg=ACCENT)
+        lbl.pack(side='left')
+        tk.Frame(f, bg=BG3, height=1).pack(side='left', fill='x', expand=True, padx=(10, 0), pady=5)
         return f
 
-    def _btn(self, parent, text, color, command):
-        return tk.Button(parent, text=text, font=FONT_B, bg=color, fg='white',
-                         activebackground=BG3, activeforeground=FG,
-                         padx=12, pady=5, relief='flat', cursor='hand2',
-                         command=command)
+    def _btn(self, parent, text, color, command, width=None):
+        btn = tk.Button(parent, text=text, font=FONT_B, bg=color, fg='white',
+                         activebackground=color, activeforeground=FG,
+                         padx=20, pady=8, relief='flat', cursor='hand2',
+                         command=command, bd=0, highlightthickness=0)
+        if width: btn.config(width=width)
+        
+        def on_ent(e): btn.config(bg=ACCENT2 if color==ACCENT else BG3)
+        def on_lev(e): btn.config(bg=color)
+        
+        btn.bind('<Enter>', on_ent)
+        btn.bind('<Leave>', on_lev)
+        return btn
 
     def _log(self, msg):
         self.pred_log.configure(state='normal')
@@ -1072,30 +1978,9 @@ class App(TkinterDnD.Tk):
     # TAB 5 — User Prediction
     # ══════════════════════════════════════════════════════════════════════════
     def _build_user_prediction_tab(self):
-        tab = self.tab_userpred
+        p = self.tab_userpred.scrollable_frame
 
-        # ── Scrollable wrapper for the whole tab ───────────────────────────────
-        _vsb = ttk.Scrollbar(tab, orient='vertical')
-        _vsb.pack(side='right', fill='y')
-        _canvas = tk.Canvas(tab, bg=BG2, highlightthickness=0,
-                             yscrollcommand=_vsb.set)
-        _canvas.pack(side='left', fill='both', expand=True)
-        _vsb.config(command=_canvas.yview)
 
-        p = tk.Frame(_canvas, bg=BG2)
-        window_id = _canvas.create_window((0, 0), window=p, anchor='nw')
-
-        def _on_frame_configure(e):
-            _canvas.configure(scrollregion=_canvas.bbox('all'))
-        p.bind('<Configure>', _on_frame_configure)
-
-        def _on_canvas_configure(e):
-            _canvas.itemconfig(window_id, width=e.width)
-        _canvas.bind('<Configure>', _on_canvas_configure)
-
-        def _on_mousewheel(e):
-            _canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units')
-        _canvas.bind_all('<MouseWheel>', _on_mousewheel)
 
         # ── User selector ──────────────────────────────────────────────────────
         self._section(p, '👤  Select User').pack(fill='x', padx=15, pady=(12,4))
@@ -1116,7 +2001,7 @@ class App(TkinterDnD.Tk):
         self._btn(top, '📈 Analyze',   ACCENT2, self._up_analyze).pack(side='left', padx=4)
 
         self.up_status = tk.Label(p, text='Click "Load Users" to begin.',
-                                   font=FONT_S, bg=BG2, fg=FG2)
+                                   font=FONT_S, bg=BG2, fg=ACCENT)
         self.up_status.pack(pady=2)
 
         # ── Pattern section (fixed height so tree below gets expand room) ──────
@@ -1541,20 +2426,15 @@ class App(TkinterDnD.Tk):
             h12  = 12 if h12 == 0 else h12
             return f'{h12}:00 {ampm}'
 
-        # Determine Login Window based on Top 2 most frequent hours
+        # Determine Login Window based on the most frequent hour for a tighter prediction
         if total_days > 1:
             hour_counts = first_logins[ts_col].dt.hour.value_counts().sort_values(ascending=False)
             
-            if len(hour_counts) >= 2:
-                # Take the top 2 most frequent hours
-                top_2_hrs = hour_counts.index[:2]
-                win_start = int(min(top_2_hrs))
-                win_end   = int(max(top_2_hrs)) + 1
-            elif len(hour_counts) == 1:
-                # Only 1 hour seen across multiple days
+            if len(hour_counts) >= 1:
+                # Take the single most frequent hour to create a strict 1-hour window
                 top_hour = hour_counts.index[0]
-                win_start = top_hour
-                win_end   = top_hour + 1
+                win_start = int(top_hour)
+                win_end   = win_start + 1
         
         # Ensure the 'Most Common Login' falls inside the calculated window
         if most_common_login_str not in ('N/A', 'No data'):
@@ -1608,6 +2488,9 @@ class App(TkinterDnD.Tk):
                 pass
 
 
+        mandatory, optional = load_holidays()
+        holidays = mandatory.union(optional)
+
         # Populate tree
         for r in self.up_tree.get_children(): self.up_tree.delete(r)
 
@@ -1615,10 +2498,16 @@ class App(TkinterDnD.Tk):
         while cur_date <= to_dt:
             day_name  = cur_date.strftime('%A')
             on_leave  = cur_date in on_leave_dates
+            is_holiday= cur_date in holidays
             day_cnt   = day_counts.get(day_name, 0)
-            likely    = (day_name in days_with_login) and not on_leave and day_cnt > 0
+            likely    = (day_name in days_with_login) and not on_leave and not is_holiday and day_cnt > 0
 
-            if on_leave:
+            if is_holiday:
+                tag   = 'leave'
+                pred  = 'Holiday'
+                win   = '-'
+                mcommon = '-'
+            elif on_leave:
                 tag   = 'leave'
                 pred  = 'On Leave'
                 win   = '-'
@@ -1647,6 +2536,359 @@ class App(TkinterDnD.Tk):
 
         self.up_status.config(
             text=f'Prediction done for "{username}" from {from_str} to {to_str}.', fg=SUCCESS)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 6 — Graphs Dashboard
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_graphs_tab(self):
+        p = self.tab_graphs # Now it's a direct frame
+        tk.Frame(p, bg=BG).place(relwidth=1, relheight=1) # Background fill
+        self._section(p, '📈  Generated Graphs & Visualizations').pack(fill='x', padx=15, pady=(12,4))
+        
+        main_f = tk.Frame(p, bg=BG)
+        main_f.pack(fill='both', expand=True, padx=15, pady=5)
+        
+        # Left sidebar for list of graphs
+        side_f = tk.Frame(main_f, bg=BG2, width=250)
+        side_f.pack(side='left', fill='y', padx=(0, 10))
+        side_f.pack_propagate(False)
+
+        top_side = tk.Frame(side_f, bg=BG2)
+        top_side.pack(fill='x', padx=10, pady=(10,5))
+        tk.Label(top_side, text='CONTROLS:', font=FONT_B, bg=BG2, fg=ACCENT).pack(side='left')
+        
+        btn_col = tk.Frame(side_f, bg=BG2)
+        btn_col.pack(fill='x', padx=10, pady=(0, 10))
+        
+        # Stacked buttons for clear visibility in narrow sidebar
+        self._btn(btn_col, '🔄  Refresh List', ACCENT2, self._refresh_graphs_list).pack(fill='x', pady=2)
+        self._btn(btn_col, '🗑️  Delete Selected', DANGER, self._delete_current_graph).pack(fill='x', pady=2)
+        self._btn(btn_col, '💣  Delete All', DANGER, self._delete_all_graphs).pack(fill='x', pady=2)
+
+        tk.Frame(side_f, bg=BG3, height=1).pack(fill='x', padx=10, pady=5) # Divider
+        tk.Label(side_f, text='AVAILABLE GRAPHS:', font=FONT_B, bg=BG2, fg=FG2).pack(anchor='w', padx=10, pady=2)
+
+        # Listbox for graphs
+        self.graphs_listbox = tk.Listbox(side_f, font=FONT_S, bg=BG, fg=FG,
+                                         selectmode='extended', 
+                                         selectbackground=ACCENT, selectforeground='#ffffff',
+                                         relief='flat', bd=0, highlightthickness=0)
+        self.graphs_listbox.pack(fill='both', expand=True, padx=10, pady=(0,10))
+        self.graphs_listbox.bind('<<ListboxSelect>>', self._on_graph_select)
+        
+        # Right viewport for image
+        self.view_f = tk.Frame(main_f, bg=BG)
+        self.view_f.pack(side='right', fill='both', expand=True)
+        self.view_f.pack_propagate(False) # CRITICAL: Prevent image label from resizing the parent frame
+        
+        self.img_label = tk.Label(self.view_f, bg=BG)
+        self.img_label.pack(fill='both', expand=True, padx=10, pady=(10, 0))
+        
+        # Bottom Description Bar
+        desc_frame = tk.Frame(self.view_f, bg=BG)
+        desc_frame.pack(fill='x', side='bottom', pady=5)
+        
+        # Initialize variables
+        self.graph_desc_var = tk.StringVar(value="")
+        self.current_img_tk = None
+        self.current_pil_img = None
+        self._last_loaded_graph = None
+
+        self.graph_desc_lbl = tk.Label(desc_frame, textvariable=self.graph_desc_var, font=FONT, 
+                                      bg=BG, fg=ACCENT, justify='center', wraplength=700)
+        self.graph_desc_lbl.pack(fill='x', pady=(2, 5))
+        
+        # Bind resize event
+        self.view_f.bind('<Configure>', self._on_view_resize)
+        
+        # Finally refresh list
+        self._refresh_graphs_list()
+
+    def _refresh_graphs_list(self):
+        sel = self.graphs_listbox.curselection()
+        current_idx = sel[0] if sel else 0
+
+        self.graphs_listbox.delete(0, tk.END)
+        self.available_graphs = [f for f in os.listdir('.') if f.endswith('.png') and not f.startswith('_tmp_')]
+        for g in self.available_graphs:
+            icon = "📊"
+            if 'concurrency' in g.lower(): icon = "⚡"
+            elif 'backtest' in g.lower():    icon = "🧪"
+            elif 'simulation' in g.lower():  icon = "💡"
+            elif 'user' in g.lower():        icon = "👤"
+            elif 'comparison' in g.lower():  icon = "🔍"
+            elif 'active_user' in g.lower(): icon = "🔑"
+            
+            self.graphs_listbox.insert(tk.END, f" {icon}  {g}")
+        
+        if not self.available_graphs:
+            self.img_label.configure(image='', text='No graphs generated yet.\nRun Prediction/Training first.', fg=FG2, font=FONT_T)
+            self.current_pil_img = None
+            self.graph_desc_var.set("")
+        else:
+            if current_idx >= len(self.available_graphs): current_idx = 0
+            self.graphs_listbox.select_set(current_idx)
+            self._on_graph_select()
+
+    def _delete_current_graph(self):
+        selected_indices = self.graphs_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning('Warning', 'Please select one or more graphs to delete.')
+            return
+        
+        files_to_delete = [self.available_graphs[i] for i in selected_indices]
+        msg = f"Are you sure you want to delete {len(files_to_delete)} graph(s)?\n" + "\n".join(files_to_delete[:10])
+        if len(files_to_delete) > 10: msg += "\n...and more"
+        
+        if messagebox.askyesno('Delete Graphs', msg + "\n\nThis cannot be undone."):
+            try:
+                for f in files_to_delete:
+                    if os.path.exists(f): os.remove(f)
+                self._refresh_graphs_list()
+                self.img_label.configure(image='')
+                messagebox.showinfo('Deleted', f'{len(files_to_delete)} graph(s) deleted.')
+            except Exception as e:
+                messagebox.showerror('Error', f'Could not delete graph(s): {e}')
+
+    def _delete_all_graphs(self):
+        files = [f for f in os.listdir('.') if f.endswith('.png') and not f.startswith('_tmp_')]
+        if not files:
+            messagebox.showinfo('Info', 'No graphs to delete.')
+            return
+        if messagebox.askyesno('Delete All', f'Are you sure you want to delete ALL {len(files)} graphs?\nThis cannot be undone.'):
+            try:
+                for f in files: os.remove(f)
+                self._refresh_graphs_list()
+                self.img_label.configure(image='')
+                messagebox.showinfo('Deleted', 'All graphs have been deleted.')
+            except Exception as e:
+                messagebox.showerror('Error', f'Could not delete all graphs: {e}')
+
+    def _on_graph_select(self, event=None):
+        sel = self.graphs_listbox.curselection()
+        if not sel: return
+        # Extract filename (after the icon)
+        display_text = self.graphs_listbox.get(sel[0])
+        filename = self.available_graphs[sel[0]]
+
+        # Dynamic Descriptions
+        desc = ""
+        
+        if 'prediction' in filename:
+            desc = "🎯 Login Intensity: Predicted login counts at 15m, 30m, and 60m intervals to visualize peak traffic times."
+        elif 'active_user_logins' in filename:
+            desc = "🔑 Historical Login Throughput: Total volume of successful login events recorded during this time interval."
+        elif 'concurrency' in filename:
+            desc = "⚡ Measured Login Frequency: Direct login counts calculated from raw SQL logs (non-ML)."
+        elif 'backtest' in filename:
+            desc = "🧪 Prediction Validation: Accuracy comparison between AI-predicted logins and historical ground truth."
+        elif 'simulation' in filename:
+            desc = "💡 Data Prep Analysis: Distribution and frequency analysis of login events across different days."
+        else:
+            desc = ""
+
+        # Premium formatting for label
+        if desc:
+            self.graph_desc_var.set(f"FILENAME: {filename}\n—\n{desc}")
+        else:
+            self.graph_desc_var.set(f"FILENAME: {filename}")
+  
+        try:
+            target_path = f"_tmp_{filename}"
+            # Only reload if filename changed OR image not yet loaded
+            if self._last_loaded_graph != filename or self.current_pil_img is None:
+                shutil.copy2(filename, target_path)
+                self.current_pil_img = Image.open(target_path)
+                self.img_label.configure(text='')
+                self._last_loaded_graph = filename
+            self._resize_and_show_img()
+        except Exception as e:
+            self.img_label.configure(image='', text=f'Error loading graph:\n{e}', fg=DANGER, font=FONT_T)
+            self.current_pil_img = None
+
+    def _on_view_resize(self, event):
+        if self.current_pil_img:
+            self._resize_and_show_img()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 9 — User Master Report
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_user_master_tab(self):
+        p = self.tab_usermaster.scrollable_frame
+        self._section(p, '📋  All Users Prediction Report').pack(fill='x', padx=15, pady=(12,4))
+
+        # Controls
+        ctrl = tk.Frame(p, bg=BG2)
+        ctrl.pack(fill='x', padx=15, pady=5)
+        
+        tk.Label(ctrl, text="Target Date:", font=FONT, bg=BG2, fg=FG2).pack(side='left', padx=5)
+        self.um_date_ent = tk.Entry(ctrl, font=FONT, width=12, bg=BG3, fg=FG)
+        self.um_date_ent.pack(side='left', padx=5)
+        self.um_date_ent.insert(0, date.today().strftime('%Y-%m-%d'))
+
+        self._btn(ctrl, '⚡ Generate Report', SUCCESS, self._run_user_master_report).pack(side='left', padx=10)
+        
+        tk.Label(ctrl, text="Search User:", font=FONT, bg=BG2, fg=FG2).pack(side='left', padx=(20, 5))
+        self.um_search_var = tk.StringVar()
+        self.um_search_var.trace_add('write', self._filter_user_master)
+        tk.Entry(ctrl, textvariable=self.um_search_var, font=FONT, width=20, bg=BG3, fg=FG).pack(side='left', padx=5)
+
+        self._section(p, '📑  Master List (Predicting for selected date)').pack(fill='x', padx=15, pady=(10,2))
+
+        # Table
+        rf = tk.Frame(p, bg=BG2)
+        rf.pack(fill='both', expand=True, padx=15, pady=(0,10))
+
+        cols = ('User Name', 'Prediction', 'Login Window (Pattern)', 'Status')
+        self.um_tree = ttk.Treeview(rf, columns=cols, show='headings', height=25)
+        for c in cols:
+            self.um_tree.heading(c, text=c)
+            self.um_tree.column(c, width=200 if 'Window' in c else 150, anchor='center')
+        
+        self.um_tree.tag_configure('likely',   foreground=SUCCESS)
+        self.um_tree.tag_configure('unlikely', foreground=FG2)
+        self.um_tree.tag_configure('leave',    foreground=DANGER)
+
+        vsb = ttk.Scrollbar(rf, orient='vertical', command=self.um_tree.yview)
+        self.um_tree.configure(yscrollcommand=vsb.set)
+        self.um_tree.grid(row=0, column=0, sticky='nsew')
+        vsb.grid(row=0, column=1, sticky='ns')
+        rf.rowconfigure(0, weight=1); rf.columnconfigure(0, weight=1)
+
+        self._um_full_data = [] # Store for filtering
+
+    def _run_user_master_report(self):
+        target_str = self.um_date_ent.get().strip()
+        win_type   = '60m'
+        try:
+            target_date = datetime.strptime(target_str, '%Y-%m-%d').date()
+        except:
+            messagebox.showerror('Error', 'Invalid date format (YYYY-MM-DD)'); return
+
+        # 1. Load Data
+        df = self._load_login_logs()
+        if df is None: return
+        
+        col    = next((c for c in df.columns if 'user' in c.lower()), None)
+        ts_col = next((c for c in df.columns if 'timestamp' in c.lower() or 'time' in c.lower()), None)
+        if not col or not ts_col:
+            messagebox.showerror('Error', 'User or Timestamp columns not found in login_logs.csv')
+            return
+
+        df[ts_col] = pd.to_datetime(df[ts_col], errors='coerce')
+        df = df.dropna(subset=[ts_col])
+        df['DateOnly'] = df[ts_col].dt.date
+        df['DayName']  = df[ts_col].dt.day_name()
+        df['UserOnly'] = df[col].str.lower().str.strip()
+        
+        # Round timestamps based on window (using lowercase for modern pandas compatibility)
+        if win_type == '15m':
+            df['TargetTime'] = df[ts_col].dt.floor('15min').dt.strftime('%H:%M')
+            delta = timedelta(minutes=15)
+        elif win_type == '30m':
+            df['TargetTime'] = df[ts_col].dt.floor('30min').dt.strftime('%H:%M')
+            delta = timedelta(minutes=30)
+        else: # 60m
+            df['TargetTime'] = df[ts_col].dt.floor('1h').dt.strftime('%H:%M')
+            delta = timedelta(hours=1)
+        
+        # 2. Get Holidays & Global Leaves
+        mandatory, optional = load_holidays()
+        holidays = mandatory.union(optional)
+        
+        all_leaves = {} # UserId -> set of dates
+        if os.path.exists(LEAVE_FILE):
+            try:
+                ldf = self._load_hr_leaves()
+                if 'UserId' in ldf.columns and 'Status' in ldf.columns:
+                    approved = ldf[ldf['Status'].astype(str).str.strip().str.lower() == 'approved']
+                    for _, row in approved.iterrows():
+                        uid = str(row['UserId']).strip().lower()
+                        s = pd.to_datetime(row.get('From Date')).date()
+                        e = pd.to_datetime(row.get('To Date')).date()
+                        all_leaves.setdefault(uid, set()).update(pd.date_range(s, e).date)
+            except: pass
+
+        # 3. Analyze per User — Optimized
+        self.tab_usermaster.scrollable_frame.config(cursor="wait")
+        self.update()
+        
+        day_name = target_date.strftime('%A')
+        is_holiday = target_date in holidays
+        
+        # Pre-group first logins for speed (on Rounded TargetTime)
+        first_logins_all = df.groupby(['UserOnly', 'DateOnly'])['TargetTime'].first().reset_index()
+        user_patterns = df.groupby('UserOnly')['DayName'].unique()
+        
+        master_results = []
+        unique_users = sorted(df['UserOnly'].unique())
+        
+        def fmt_time_str(t_str):
+            try:
+                dt = datetime.strptime(t_str, '%H:%M')
+                val = dt.strftime('%I:%M %p').lstrip('0')
+                end = (dt + delta).strftime('%I:%M %p').lstrip('0')
+                return f"{val} - {end}"
+            except: return t_str
+
+        for user in unique_users:
+            user_first = first_logins_all[first_logins_all['UserOnly'] == user]
+            if user_first.empty: continue
+            
+            # Typical Window (Mode of TargetTime)
+            modes = user_first['TargetTime'].mode()
+            top_time = modes.iloc[0] if not modes.empty else "09:00"
+            win_str = fmt_time_str(top_time)
+            
+            # Prediction
+            on_leave = target_date in all_leaves.get(user, set())
+            has_pattern = day_name in user_patterns.get(user, [])
+            
+            status = 'Normal Day'
+            tag = 'likely'
+            prediction = 'Likely'
+            
+            if is_holiday:
+                status = 'Public Holiday'; tag = 'unlikely'; prediction = 'No'
+            elif on_leave:
+                status = 'On Leave'; tag = 'leave'; prediction = 'No'
+            elif not has_pattern:
+                status = 'Off Day'; tag = 'unlikely'; prediction = 'No'
+            
+            master_results.append((user, prediction, win_str, status, tag))
+
+        self.tab_usermaster.scrollable_frame.config(cursor="")
+        self._um_full_data = master_results
+        self._filter_user_master()
+
+    def _filter_user_master(self, *args):
+        search = self.um_search_var.get().strip().lower()
+        for r in self.um_tree.get_children(): self.um_tree.delete(r)
+        
+        for user, pred, win, status, tag in self._um_full_data:
+            if not search or search in user:
+                self.um_tree.insert('', 'end', values=(user, pred, win, status), tags=(tag,))
+
+    def _resize_and_show_img(self):
+        if not self.current_pil_img: return
+        
+        # Get current frame dimensions
+        view_w = self.view_f.winfo_width() - 20 # padding
+        view_h = self.view_f.winfo_height() - 20
+        
+        if view_w <= 10 or view_h <= 10: return
+        
+        # Calculate aspect maintaining size
+        img_w, img_h = self.current_pil_img.size
+        ratio = min(view_w/img_w, view_h/img_h)
+        new_w = int(img_w * ratio)
+        new_h = int(img_h * ratio)
+        
+        # Resize
+        resized = self.current_pil_img.resize((new_w, new_h), Image.LANCZOS)
+        self.current_img_tk = ImageTk.PhotoImage(resized)
+        
+        self.img_label.configure(image=self.current_img_tk)
 
 # ── Launch ─────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
